@@ -1,4 +1,5 @@
 import type { ProviderStreamEvent } from '../types.js';
+import type { ProviderId } from '../config.js';
 
 export interface ModelInfo {
   id: string;
@@ -31,7 +32,8 @@ export interface AuthenticationOptions {
 }
 
 export interface ProviderAdapter {
-  readonly id: string;
+  readonly id: ProviderId;
+  readonly idleTimeoutMs: number;
   authenticate?(options?: AuthenticationOptions): Promise<void>;
   authStatus(): Promise<AuthStatus>;
   listModels(): Promise<ModelInfo[]>;

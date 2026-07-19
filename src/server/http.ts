@@ -92,7 +92,7 @@ async function chatCompletion(
     sessionId,
     thinking: !model.endsWith('-no-thinking'),
     signal: controller.signal,
-    idleTimeoutMs: config.providers.qwen.idleTimeoutMs
+    idleTimeoutMs: provider.idleTimeoutMs
   });
 
   if (body.stream) {

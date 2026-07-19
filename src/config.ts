@@ -3,6 +3,24 @@ import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+export const providerIds = ['qwen', 'kimi', 'chatgpt', 'gemini'] as const;
+export type ProviderId = typeof providerIds[number];
+
+export function isProviderId(value: string): value is ProviderId {
+  return providerIds.includes(value as ProviderId);
+}
+
+export interface ProviderConfig {
+  enabled: boolean;
+  requestTimeoutMs: number;
+  idleTimeoutMs: number;
+}
+
+export interface BrowserProviderConfig extends ProviderConfig {
+  browser: 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge';
+  headless: boolean;
+}
+
 export interface AgentProxyConfig {
   version: 1;
   profile: 'hermes';
@@ -21,13 +39,10 @@ export interface AgentProxyConfig {
     exposeReasoning: boolean;
   };
   providers: {
-    qwen: {
-      enabled: boolean;
-      browser: 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge';
-      headless: boolean;
-      requestTimeoutMs: number;
-      idleTimeoutMs: number;
-    };
+    qwen: BrowserProviderConfig;
+    kimi: ProviderConfig;
+    chatgpt: ProviderConfig;
+    gemini: ProviderConfig;
   };
   integrations: {
     hermes: {
@@ -51,13 +66,16 @@ export function getAgentProxyHome(): string {
 
 export function getPaths() {
   const home = getAgentProxyHome();
+  const providers = path.join(home, 'providers');
   return {
     home,
     config: path.join(home, 'config.json'),
     runtime: path.join(home, 'runtime.json'),
     logs: path.join(home, 'logs'),
     log: path.join(home, 'logs', 'agentproxy.log'),
-    qwenProfile: path.join(home, 'providers', 'qwen', 'browser-profile')
+    providers,
+    providerHome: (providerId: ProviderId) => path.join(providers, providerId),
+    qwenProfile: path.join(providers, 'qwen', 'browser-profile')
   };
 }
 
@@ -86,6 +104,21 @@ export function createDefaultConfig(): AgentProxyConfig {
         headless: true,
         requestTimeoutMs: 180_000,
         idleTimeoutMs: 75_000
+      },
+      kimi: {
+        enabled: false,
+        requestTimeoutMs: 180_000,
+        idleTimeoutMs: 75_000
+      },
+      chatgpt: {
+        enabled: false,
+        requestTimeoutMs: 180_000,
+        idleTimeoutMs: 75_000
+      },
+      gemini: {
+        enabled: false,
+        requestTimeoutMs: 180_000,
+        idleTimeoutMs: 75_000
       }
     },
     integrations: {
@@ -103,14 +136,18 @@ export function applyHermesProfile(config: AgentProxyConfig): AgentProxyConfig {
   config.context.maxSystemChars = Math.min(config.context.maxSystemChars, 24_000);
   config.context.maxToolResultChars = Math.min(config.context.maxToolResultChars, 8_000);
   config.context.exposeReasoning = false;
-  config.providers.qwen.requestTimeoutMs = Math.max(config.providers.qwen.requestTimeoutMs, 180_000);
-  config.providers.qwen.idleTimeoutMs = Math.max(config.providers.qwen.idleTimeoutMs, 75_000);
+  for (const providerId of providerIds) {
+    const provider = config.providers[providerId];
+    provider.requestTimeoutMs = Math.max(provider.requestTimeoutMs, 180_000);
+    provider.idleTimeoutMs = Math.max(provider.idleTimeoutMs, 75_000);
+  }
   return config;
 }
 
 export async function ensureHome(): Promise<void> {
   const paths = getPaths();
   await mkdir(paths.logs, { recursive: true });
+  await mkdir(paths.providers, { recursive: true });
   await mkdir(path.dirname(paths.qwenProfile), { recursive: true });
 }
 
@@ -119,7 +156,7 @@ export async function loadConfig(): Promise<AgentProxyConfig> {
   const paths = getPaths();
   try {
     const raw = await readFile(paths.config, 'utf8');
-    const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as Partial<AgentProxyConfig>;
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as PartialAgentProxyConfig;
     return mergeConfig(createDefaultConfig(), parsed);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -129,7 +166,14 @@ export async function loadConfig(): Promise<AgentProxyConfig> {
   }
 }
 
-function mergeConfig(base: AgentProxyConfig, value: Partial<AgentProxyConfig>): AgentProxyConfig {
+export type PartialAgentProxyConfig = Omit<Partial<AgentProxyConfig>, 'server' | 'context' | 'providers' | 'integrations'> & {
+  server?: Partial<AgentProxyConfig['server']>;
+  context?: Partial<AgentProxyConfig['context']>;
+  providers?: { [K in ProviderId]?: Partial<AgentProxyConfig['providers'][K]> };
+  integrations?: { hermes?: Partial<AgentProxyConfig['integrations']['hermes']> };
+};
+
+export function mergeConfig(base: AgentProxyConfig, value: PartialAgentProxyConfig): AgentProxyConfig {
   return {
     ...base,
     ...value,
@@ -138,7 +182,10 @@ function mergeConfig(base: AgentProxyConfig, value: Partial<AgentProxyConfig>): 
     providers: {
       ...base.providers,
       ...value.providers,
-      qwen: { ...base.providers.qwen, ...value.providers?.qwen }
+      qwen: { ...base.providers.qwen, ...value.providers?.qwen },
+      kimi: { ...base.providers.kimi, ...value.providers?.kimi },
+      chatgpt: { ...base.providers.chatgpt, ...value.providers?.chatgpt },
+      gemini: { ...base.providers.gemini, ...value.providers?.gemini }
     },
     integrations: {
       ...base.integrations,

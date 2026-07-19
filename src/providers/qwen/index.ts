@@ -30,6 +30,10 @@ export class QwenProvider implements ProviderAdapter {
     this.auth = new QwenBrowserAuth(config);
   }
 
+  get idleTimeoutMs(): number {
+    return this.config.providers.qwen.idleTimeoutMs;
+  }
+
   authenticate(options?: AuthenticationOptions): Promise<void> {
     return this.auth.authenticate(options?.force);
   }

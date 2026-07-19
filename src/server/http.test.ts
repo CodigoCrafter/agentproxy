@@ -8,7 +8,8 @@ import type { ProviderStreamEvent } from '../types.js';
 import { createApiServer } from './http.js';
 
 class FakeProvider implements ProviderAdapter {
-  readonly id = 'fake';
+  readonly id = 'qwen';
+  readonly idleTimeoutMs = 12_345;
   lastRequest: ProviderRequest | null = null;
 
   async authStatus() { return { authenticated: true, detail: 'test' }; }
@@ -80,6 +81,7 @@ test('HTTP API authenticates requests and emits OpenAI tool calls', async () => 
     const body = await completion.json() as { choices: Array<{ message: { tool_calls: Array<{ function: { name: string } }> } }> };
     assert.equal(body.choices[0].message.tool_calls[0].function.name, 'read_file');
     assert.doesNotMatch(provider.lastRequest?.prompt || '', /do not forward this/);
+    assert.equal(provider.lastRequest?.idleTimeoutMs, provider.idleTimeoutMs);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

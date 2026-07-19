@@ -8,7 +8,9 @@ import process from 'node:process';
 import {
   applyHermesProfile,
   getPaths,
+  isProviderId,
   loadConfig,
+  providerIds,
   readRuntime,
   removeRuntime,
   saveConfig,
@@ -139,16 +141,18 @@ async function hermesQuickstart(): Promise<void> {
 }
 
 async function login(providerId: string | undefined): Promise<void> {
-  if (providerId !== 'qwen') throw new Error('Login disponivel: proxy login qwen');
+  if (!providerId || !isProviderId(providerId)) {
+    throw new Error(`Provedor invalido. Disponiveis: ${providerIds.join(', ')}`);
+  }
   const config = await loadConfig();
-  config.providers.qwen.enabled = true;
-  await saveConfig(config);
+  config.providers[providerId].enabled = true;
   const registry = new ProviderRegistry(config);
   try {
-    const qwen = registry.get('qwen');
-    if (!qwen?.authenticate) throw new Error('Adaptador Qwen indisponivel.');
-    process.stdout.write('Abrindo uma nova sessao do Qwen...\n');
-    await qwen.authenticate({ force: true });
+    const provider = registry.get(providerId);
+    if (!provider?.authenticate) throw new Error(`Adaptador ${providerId} indisponivel.`);
+    await saveConfig(config);
+    process.stdout.write(`Abrindo uma nova sessao do ${providerId}...\n`);
+    await provider.authenticate({ force: true });
   } finally {
     await registry.close();
   }
@@ -243,11 +247,14 @@ async function doctor(): Promise<void> {
   const checks: Array<[string, boolean, string]> = [];
   checks.push(['Configuracao', true, getPaths().config]);
   checks.push(['Servidor', !!runtime && await health(runtime), runtime ? `porta ${runtime.port}` : 'offline']);
-  const qwen = registry.get('qwen');
-  if (qwen) {
-    const auth = await qwen.authStatus();
-    checks.push(['Qwen', auth.authenticated, auth.detail]);
-  } else checks.push(['Qwen', false, 'desabilitado']);
+  for (const providerId of providerIds) {
+    const provider = registry.get(providerId);
+    const name = providerId === 'qwen' ? 'Qwen' : providerId === 'chatgpt' ? 'ChatGPT' : providerId[0].toUpperCase() + providerId.slice(1);
+    if (provider) {
+      const auth = await provider.authStatus();
+      checks.push([name, auth.authenticated, auth.detail]);
+    } else checks.push([name, false, 'desabilitado']);
+  }
   await registry.close();
 
   process.stdout.write('\nDiagnostico AgentProxy\n\n');
@@ -314,7 +321,7 @@ AgentProxy 0.1.0
 
 Uso:
   proxy setup              Configura provedores e login
-  proxy login qwen         Limpa a sessao e abre um novo login Qwen
+  proxy login <provedor>   Limpa a sessao e abre um novo login
   proxy hermes             Configura Qwen, inicia e conecta o Hermes
   proxy on                 Inicia em segundo plano
   proxy on --foreground    Inicia mostrando os logs

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyHermesProfile, createDefaultConfig } from './config.js';
+import { applyHermesProfile, createDefaultConfig, mergeConfig, providerIds } from './config.js';
 
 test('Hermes profile clamps legacy context settings and extends upstream timeouts', () => {
   const config = createDefaultConfig();
@@ -11,6 +11,8 @@ test('Hermes profile clamps legacy context settings and extends upstream timeout
   config.context.exposeReasoning = true;
   config.providers.qwen.requestTimeoutMs = 120_000;
   config.providers.qwen.idleTimeoutMs = 45_000;
+  config.providers.kimi.requestTimeoutMs = 90_000;
+  config.providers.kimi.idleTimeoutMs = 30_000;
 
   applyHermesProfile(config);
 
@@ -21,4 +23,30 @@ test('Hermes profile clamps legacy context settings and extends upstream timeout
   assert.equal(config.context.exposeReasoning, false);
   assert.equal(config.providers.qwen.requestTimeoutMs, 180_000);
   assert.equal(config.providers.qwen.idleTimeoutMs, 75_000);
+  assert.equal(config.providers.kimi.requestTimeoutMs, 180_000);
+  assert.equal(config.providers.kimi.idleTimeoutMs, 75_000);
+});
+
+test('default configuration keeps new providers disabled', () => {
+  const config = createDefaultConfig();
+  assert.equal(config.providers.qwen.enabled, true);
+  for (const providerId of providerIds.filter((id) => id !== 'qwen')) {
+    assert.equal(config.providers[providerId].enabled, false);
+  }
+});
+
+test('legacy Qwen-only configuration receives multi-provider defaults', () => {
+  const base = createDefaultConfig();
+  const config = mergeConfig(base, {
+    defaultModel: 'qwen/legacy-model',
+    providers: {
+      qwen: { idleTimeoutMs: 91_000 }
+    }
+  });
+
+  assert.equal(config.defaultModel, 'qwen/legacy-model');
+  assert.equal(config.providers.qwen.idleTimeoutMs, 91_000);
+  assert.equal(config.providers.kimi.enabled, false);
+  assert.equal(config.providers.chatgpt.enabled, false);
+  assert.equal(config.providers.gemini.enabled, false);
 });

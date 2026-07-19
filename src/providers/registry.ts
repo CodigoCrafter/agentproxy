@@ -1,13 +1,22 @@
-import type { AgentProxyConfig } from '../config.js';
+import { providerIds, type AgentProxyConfig, type ProviderId } from '../config.js';
 import { QwenProvider } from './qwen/index.js';
 import type { ProviderAdapter } from './types.js';
+
+export type ProviderFactory = (config: AgentProxyConfig) => ProviderAdapter;
+
+const defaultFactories: Partial<Record<ProviderId, ProviderFactory>> = {
+  qwen: (config) => new QwenProvider(config)
+};
 
 export class ProviderRegistry {
   private readonly providers = new Map<string, ProviderAdapter>();
 
-  constructor(config: AgentProxyConfig) {
-    if (config.providers.qwen.enabled) {
-      this.providers.set('qwen', new QwenProvider(config));
+  constructor(config: AgentProxyConfig, factories = defaultFactories) {
+    for (const providerId of providerIds) {
+      if (!config.providers[providerId].enabled) continue;
+      const factory = factories[providerId];
+      if (!factory) throw new Error(`Provider enabled but not implemented: ${providerId}`);
+      this.providers.set(providerId, factory(config));
     }
   }
 
@@ -20,8 +29,12 @@ export class ProviderRegistry {
     return { provider, model };
   }
 
-  get(providerId: string): ProviderAdapter | undefined {
+  get(providerId: ProviderId): ProviderAdapter | undefined {
     return this.providers.get(providerId);
+  }
+
+  entries(): Array<[ProviderId, ProviderAdapter]> {
+    return [...this.providers.entries()] as Array<[ProviderId, ProviderAdapter]>;
   }
 
   async listModels() {

@@ -1,0 +1,5 @@
+AgentProxy contains adapted portions of qwenproxy by Pedro Farias.
+Original project copyright (c) 2026 Pedro Farias, licensed under ISC.
+
+The AgentProxy architecture, CLI, context controls, provider contract,
+runtime management, port rotation, and Hermes-focused behavior are new work.

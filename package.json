@@ -1,0 +1,46 @@
+{
+  "name": "agentproxy",
+  "version": "0.1.0",
+  "description": "Local multi-provider AI gateway optimized for agentic clients, starting with Hermes Agent and Qwen.",
+  "type": "module",
+  "bin": {
+    "agentproxy": "dist/cli.js",
+    "proxy": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js on --foreground",
+    "install:wsl": "bash scripts/install-wsl.sh",
+    "test": "tsx --test src/*.test.ts src/**/*.test.ts src/**/**/*.test.ts",
+    "check": "npm run build && npm test",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "ai",
+    "proxy",
+    "hermes-agent",
+    "openai-compatible",
+    "qwen"
+  ],
+  "author": "Andre",
+  "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.9.0"
+  }
+}

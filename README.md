@@ -19,15 +19,31 @@ Gateway local OpenAI-compatible otimizado para agentes de IA. O primeiro alvo e 
 
 ## Instalacao rapida no WSL
 
-Este e o caminho recomendado para usar com o Hermes Agent.
+Este e o caminho recomendado para usar com o Hermes Agent. Para usuarios novos, prefira rodar AgentProxy e Hermes no mesmo ambiente WSL.
 
-Requer Node.js 20 ou superior instalado dentro do WSL.
+Requisitos:
+
+- WSL Ubuntu ou outra distribuicao Linux compativel.
+- Node.js 20 ou superior instalado dentro do WSL.
+- Hermes Agent instalado e funcionando.
+- Conta Qwen ativa.
+
+Instalacao do zero:
 
 ```bash
+git clone https://github.com/CodigoCrafter/agentproxy.git
+cd agentproxy
 bash scripts/install-wsl.sh --start
 ```
 
 Esse comando instala dependencias, baixa o Chromium do Playwright, compila o projeto, registra o comando `proxy` no WSL e roda `proxy hermes`.
+
+No primeiro uso, faca o login manual no Qwen:
+
+```bash
+proxy login qwen
+proxy hermes
+```
 
 Depois disso, o uso diario fica:
 
@@ -43,10 +59,22 @@ Se quiser instalar sem iniciar:
 bash scripts/install-wsl.sh
 ```
 
+Tambem existe o atalho npm:
+
+```bash
+npm run install:wsl
+```
+
+### Windows + WSL
+
+O uso com AgentProxy no Windows e Hermes dentro do WSL e suportado, mas e mais sensivel a IP, porta, PATH e ponte entre ambientes. Para instalacao inicial e para usuarios iniciantes, use tudo dentro do WSL.
+
+Quando o Hermes estiver no WSL e o AgentProxy no Windows, o daemon abre uma segunda escuta somente na interface privada do WSL. O endpoint Windows continua em `127.0.0.1`; nenhuma escuta generica em `0.0.0.0` e criada.
+
 ## Instalacao manual
 
 ```bash
-npm install
+npm ci
 npx playwright install chromium
 npm run build
 npm link
@@ -74,8 +102,6 @@ proxy off
 Se a porta `3091` estiver ocupada, o servidor tenta `3092`, `3093` e assim por diante. A porta escolhida fica em `~/.agentproxy/runtime.json`, e todos os comandos consultam esse arquivo automaticamente.
 
 Depois de `proxy connect hermes`, o AgentProxy configura o Hermes como provedor customizado. A integracao fica registrada e atualiza a `model.base_url` automaticamente em cada inicializacao, inclusive quando houver rotacao de porta. No Windows, o comando procura o Hermes local e depois tenta a distribuicao WSL padrao.
-
-Quando o Hermes estiver no WSL e o AgentProxy no Windows, o daemon abre uma segunda escuta somente na interface privada do WSL. O endpoint Windows continua em `127.0.0.1`; nenhuma escuta generica em `0.0.0.0` e criada.
 
 ## Configuracao do cliente
 
@@ -114,6 +140,13 @@ Credenciais, cookies e perfis de navegador ficam fora do repositorio em `~/.agen
 
 ## Solucao de problemas
 
+Rode sempre o diagnostico antes de investigar manualmente:
+
+```bash
+proxy doctor
+proxy status
+```
+
 Se o Qwen responder `Your account is currently pending activation`, a sessao do navegador existe, mas a conta ainda nao foi ativada. Abra o e-mail enviado pelo Qwen, confirme a conta e depois execute:
 
 ```bash
@@ -123,6 +156,32 @@ proxy hermes
 ```
 
 Se `proxy` apontar para um `proxy.cmd` do Windows ou nao for encontrado, abra um novo terminal WSL e rode novamente `bash scripts/install-wsl.sh --skip-browser`. O instalador remove aliases antigos e registra o comando nativo do WSL.
+
+Se o Hermes mostrar `Model not found`, confira os modelos disponiveis e selecione um deles:
+
+```bash
+proxy models
+proxy use qwen/qwen3.7-max-no-thinking
+proxy hermes
+```
+
+Se aparecer `browserContext.newPage: Target page, context or browser has been closed`, o navegador usado pelo Playwright fechou ou ficou invalido. Reinicie o daemon:
+
+```bash
+proxy off
+proxy hermes
+```
+
+Se aparecer `Provider enabled but not implemented`, algum provider experimental esta habilitado na configuracao, mas ainda nao tem adaptador estavel no codigo publicado. No estado atual do projeto, mantenha somente o Qwen habilitado em `~/.agentproxy/config.json`.
+
+Se houver conflito entre dependencias do Windows e do WSL, reinstale dentro do WSL. Dependencias nativas, como `esbuild` em outros projetos ou binarios do Playwright, devem ser instaladas no mesmo ambiente onde o proxy sera executado:
+
+```bash
+rm -rf node_modules
+npm ci
+npx playwright install chromium
+npm run build
+```
 
 ## Arquitetura
 
@@ -138,7 +197,7 @@ Hermes / cliente OpenAI
       Qwen adapter
 ```
 
-Os proximos adaptadores planejados sao Kimi e DeepSeek. Gemini e OpenAI serao adicionados com autenticacao oficial quando disponivel; adaptadores baseados em sessao de site serao explicitamente marcados como experimentais.
+Os proximos adaptadores planejados sao Kimi, ChatGPT e Gemini. O objetivo e adicionar um provider por vez, mantendo isolamento entre adaptadores e sem quebrar o Qwen ja estavel. Adaptadores baseados em sessao de site serao explicitamente marcados como experimentais.
 
 ## Desenvolvimento
 

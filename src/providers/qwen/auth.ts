@@ -101,6 +101,14 @@ export class QwenBrowserAuth {
     }
   }
 
+  async invalidateSession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      this.sessions.delete(sessionId);
+      await session.page.close().catch(() => undefined);
+    }
+  }
+
   async close(): Promise<void> {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.cleanupTimer = null;

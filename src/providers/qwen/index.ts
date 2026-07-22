@@ -62,6 +62,7 @@ export class QwenProvider implements ProviderAdapter {
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
     const model = request.model.replace(/-no-thinking$/, '');
     const { session, release } = await this.auth.acquireSession(request.sessionId, model);
+    let shouldInvalidateSession = false;
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const payload = {
@@ -116,11 +117,15 @@ export class QwenProvider implements ProviderAdapter {
           throw new Error(`Qwen request failed: HTTP ${response.status} ${detail.slice(0, 500)}`);
         }
         yield* this.readQwenStream(response.body, request.idleTimeoutMs, controller);
+      } catch (error) {
+        shouldInvalidateSession = true;
+        throw error;
       } finally {
         clearTimeout(totalTimer);
         request.signal.removeEventListener('abort', abort);
       }
     } finally {
+      if (shouldInvalidateSession) await this.auth.invalidateSession(request.sessionId);
       release();
     }
   }

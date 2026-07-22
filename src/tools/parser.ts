@@ -15,6 +15,7 @@ export interface ParserOutput {
 const START = '<tool_call>';
 const END = '</tool_call>';
 const LEGACY_START = '[tool_calls]';
+const XML_LEGACY_START = '<tool_calls>';
 const JSON_FENCE = /^```(?:json)?\s*([\s\S]*?)\s*```$/i;
 
 export class StreamingToolParser {
@@ -33,9 +34,12 @@ export class StreamingToolParser {
 
     while (this.buffer) {
       const xmlStartIndex = this.buffer.indexOf(START);
-      const legacyStartIndex = this.buffer.indexOf(LEGACY_START);
+      const legacyStartIndex = this.firstIndexOf([LEGACY_START, XML_LEGACY_START]);
       if (legacyStartIndex !== -1 && (xmlStartIndex === -1 || legacyStartIndex < xmlStartIndex)) {
-        if (legacyStartIndex > 0) text += this.buffer.slice(0, legacyStartIndex);
+        if (legacyStartIndex > 0) {
+          const prefix = this.buffer.slice(0, legacyStartIndex);
+          if (!this.isStrayToolSyntaxPrefix(prefix)) text += prefix;
+        }
         this.buffer = this.buffer.slice(legacyStartIndex);
         if (this.buffer.length > this.maxBuffer) {
           const parsed = this.parseLeakedJson(this.buffer);
@@ -61,7 +65,7 @@ export class StreamingToolParser {
           }
           break;
         }
-        const keep = Math.min(this.buffer.length, Math.max(START.length, LEGACY_START.length) - 1);
+        const keep = Math.min(this.buffer.length, Math.max(START.length, LEGACY_START.length, XML_LEGACY_START.length) - 1);
         text += this.buffer.slice(0, this.buffer.length - keep);
         this.buffer = this.buffer.slice(-keep);
         break;
@@ -257,6 +261,7 @@ export class StreamingToolParser {
   private maybeLeakedJsonToolCall(value: string): boolean {
     const trimmed = value.trimStart();
     if (trimmed.toLowerCase().startsWith(LEGACY_START)) return true;
+    if (trimmed.toLowerCase().startsWith(XML_LEGACY_START)) return true;
     if (!trimmed.startsWith('{') && !trimmed.startsWith('[') && !trimmed.startsWith('```')) return false;
     return this.looksLikeToolJson(trimmed);
   }
@@ -288,6 +293,20 @@ export class StreamingToolParser {
 
   private looksLikeToolJson(value: string): boolean {
     return /"tool_calls"|"function"|"arguments"|"name"/.test(value);
+  }
+
+  private firstIndexOf(markers: string[]): number {
+    let index = -1;
+    for (const marker of markers) {
+      const candidate = this.buffer.indexOf(marker);
+      if (candidate !== -1 && (index === -1 || candidate < index)) index = candidate;
+    }
+    return index;
+  }
+
+  private isStrayToolSyntaxPrefix(value: string): boolean {
+    const trimmed = value.trim();
+    return trimmed === '</' || trimmed === '<' || trimmed === '/';
   }
 
   private isAllowed(name: string): boolean {

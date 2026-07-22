@@ -84,6 +84,20 @@ test('recovers the legacy envelope with a plural XML closing tag', () => {
   assert.deepEqual(final.toolCalls[0].arguments.tasks, [{ goal: 'PARALLEL_D_OK' }]);
 });
 
+test('recovers a plural XML tool_calls block with a stray opener fragment', () => {
+  const parser = new StreamingToolParser(undefined, new Set(['terminal']));
+  parser.feed('</\n\n<tool_calls>\n');
+  parser.feed('[{"id":"toolu_123","name":"terminal","arguments":{"command":"pwd"}}]');
+  parser.feed('\n</tool_calls>');
+  const final = parser.flush();
+
+  assert.equal(final.text, '');
+  assert.equal(final.malformedToolCall, undefined);
+  assert.equal(final.toolCalls.length, 1);
+  assert.equal(final.toolCalls[0].name, 'terminal');
+  assert.deepEqual(final.toolCalls[0].arguments, { command: 'pwd' });
+});
+
 test('recovers the legacy envelope with a bracket closing tag', () => {
   const parser = new StreamingToolParser(undefined, new Set(['delegate_task']));
   parser.feed('[tool_calls]\n');

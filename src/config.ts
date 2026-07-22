@@ -73,6 +73,7 @@ export function getPaths() {
     runtime: path.join(home, 'runtime.json'),
     logs: path.join(home, 'logs'),
     log: path.join(home, 'logs', 'agentproxy.log'),
+    telemetry: path.join(home, 'logs', 'telemetry.jsonl'),
     providers,
     providerHome: (providerId: ProviderId) => path.join(providers, providerId),
     qwenProfile: path.join(providers, 'qwen', 'browser-profile')
@@ -91,10 +92,10 @@ export function createDefaultConfig(): AgentProxyConfig {
       portScanLimit: 50
     },
     context: {
-      maxHistoryMessages: 20,
+      maxHistoryMessages: 16,
       maxInputChars: 64_000,
       maxSystemChars: 24_000,
-      maxToolResultChars: 8_000,
+      maxToolResultChars: 4_000,
       exposeReasoning: false
     },
     providers: {
@@ -131,10 +132,10 @@ export function createDefaultConfig(): AgentProxyConfig {
 
 export function applyHermesProfile(config: AgentProxyConfig): AgentProxyConfig {
   config.profile = 'hermes';
-  config.context.maxHistoryMessages = Math.min(config.context.maxHistoryMessages, 20);
+  config.context.maxHistoryMessages = Math.min(config.context.maxHistoryMessages, 16);
   config.context.maxInputChars = Math.min(config.context.maxInputChars, 64_000);
   config.context.maxSystemChars = Math.min(config.context.maxSystemChars, 24_000);
-  config.context.maxToolResultChars = Math.min(config.context.maxToolResultChars, 8_000);
+  config.context.maxToolResultChars = Math.min(config.context.maxToolResultChars, 4_000);
   config.context.exposeReasoning = false;
   for (const providerId of providerIds) {
     const provider = config.providers[providerId];

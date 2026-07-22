@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AgentProxyConfig } from '../config.js';
 import { buildHermesPrompt } from '../context/hermes.js';
+import {
+  buildRequestTelemetry,
+  recordRequestEnd,
+  recordRequestError,
+  recordRequestStart,
+  recordStreamError,
+  type RequestTelemetry
+} from '../diagnostics/telemetry.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { StreamingToolParser } from '../tools/parser.js';
 import type { ChatCompletionRequest, Usage } from '../types.js';
@@ -81,6 +89,10 @@ async function chatCompletion(
   const { provider, model } = registry.resolve(modelId);
   const prompt = buildHermesPrompt(body, config.context);
   const sessionId = deriveSessionId(incoming, body);
+  const requestId = `apxreq-${randomUUID()}`;
+  const telemetry = buildRequestTelemetry(requestId, modelId, model, sessionId, body, prompt);
+  const startedAt = performance.now();
+  await recordRequestStart(telemetry);
   const controller = new AbortController();
   response.once('close', () => {
     if (!response.writableEnded) controller.abort(new Error('Client disconnected'));
@@ -95,11 +107,16 @@ async function chatCompletion(
     idleTimeoutMs: provider.idleTimeoutMs
   });
 
-  if (body.stream) {
-    const events = await primeStream(providerEvents);
-    await streamResponse(response, events, modelId, body, config);
-  } else {
-    await jsonResponse(response, providerEvents, modelId, prompt.prompt, body, config.context.exposeReasoning);
+  try {
+    if (body.stream) {
+      const events = await primeStream(providerEvents);
+      await streamResponse(response, events, modelId, body, config, telemetry, startedAt);
+    } else {
+      await jsonResponse(response, providerEvents, modelId, prompt.prompt, body, config.context.exposeReasoning, telemetry, startedAt);
+    }
+  } catch (error) {
+    await recordRequestError(telemetry, elapsedMs(startedAt), error);
+    throw error;
   }
 }
 
@@ -123,7 +140,9 @@ async function streamResponse(
   events: AsyncIterable<import('../types.js').ProviderStreamEvent>,
   model: string,
   body: ChatCompletionRequest,
-  config: AgentProxyConfig
+  config: AgentProxyConfig,
+  telemetry: RequestTelemetry,
+  startedAt: number
 ): Promise<void> {
   const id = `chatcmpl-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -188,9 +207,11 @@ async function streamResponse(
     send([choice({}, parser.getToolCallCount() ? 'tool_calls' : 'stop')], body.stream_options?.include_usage ? undefined : usage);
     if (body.stream_options?.include_usage) send([], usage);
     response.write('data: [DONE]\n\n');
+    await recordRequestEnd(telemetry, elapsedMs(startedAt), emittedTools, inputTokens, outputTokens);
   } catch (error) {
     const message = (error as Error).message || 'Unknown provider streaming error';
     process.stderr.write(`[AgentProxy] streaming error model=${model}: ${message}\n`);
+    await recordStreamError(telemetry, elapsedMs(startedAt), emittedTools, error);
     response.write(`data: ${JSON.stringify({ error: { message, type: 'agentproxy_upstream_error' } })}\n\n`);
     response.write('data: [DONE]\n\n');
   } finally {
@@ -205,7 +226,9 @@ async function jsonResponse(
   model: string,
   prompt: string,
   body: ChatCompletionRequest,
-  exposeReasoning: boolean
+  exposeReasoning: boolean,
+  telemetry: RequestTelemetry,
+  startedAt: number
 ): Promise<void> {
   const parser = new StreamingToolParser(undefined, allowedToolNames(body));
   let content = '';
@@ -235,13 +258,15 @@ async function jsonResponse(
   const message: Record<string, unknown> = { role: 'assistant', content: toolCalls.length ? null : content };
   if (toolCalls.length) message.tool_calls = toolCalls;
   if (reasoning && exposeReasoning) message.reasoning_content = reasoning;
+  const usage = makeUsage(inputTokens, outputTokens);
+  await recordRequestEnd(telemetry, elapsedMs(startedAt), toolCalls.length, inputTokens, outputTokens);
   json(response, 200, {
     id: `chatcmpl-${randomUUID()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model,
     choices: [{ index: 0, message, logprobs: null, finish_reason: toolCalls.length ? 'tool_calls' : 'stop' }],
-    usage: makeUsage(inputTokens, outputTokens)
+    usage
   });
 }
 
@@ -317,4 +342,8 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 function statusForError(error: unknown): number {
   const status = (error as { statusCode?: number }).statusCode;
   return status && status >= 400 && status <= 599 ? status : 500;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt));
 }

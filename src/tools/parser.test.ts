@@ -150,6 +150,30 @@ test('recovers an allowed second call whose JSON name prefix was dropped', () =>
   assert.deepEqual(final.toolCalls[0].arguments, { command: 'printf DIR_READY' });
 });
 
+test('recovers a leaked tool call whose name key collapsed to a colon', () => {
+  const parser = new StreamingToolParser(undefined, new Set(['read_file']));
+  const output = parser.feed('":"read_file","arguments":{"path":"/tmp/package.json"}}');
+  const final = parser.flush();
+
+  assert.equal(output.text + final.text, '');
+  assert.equal(output.malformedToolCall, undefined);
+  assert.equal(output.toolCalls.length + final.toolCalls.length, 1);
+  assert.equal(final.toolCalls[0].name, 'read_file');
+  assert.deepEqual(final.toolCalls[0].arguments, { path: '/tmp/package.json' });
+});
+
+test('recovers an argument-only terminal call when the name prefix is missing', () => {
+  const parser = new StreamingToolParser(undefined, new Set(['terminal']));
+  const output = parser.feed('","arguments":{"command":"cat package.json"}}');
+  const final = parser.flush();
+
+  assert.equal(output.text + final.text, '');
+  assert.equal(output.malformedToolCall, undefined);
+  assert.equal(output.toolCalls.length + final.toolCalls.length, 1);
+  assert.equal(final.toolCalls[0].name, 'terminal');
+  assert.deepEqual(final.toolCalls[0].arguments, { command: 'cat package.json' });
+});
+
 test('recovers multiple calls after one legacy envelope marker', () => {
   const parser = new StreamingToolParser(undefined, new Set(['todo', 'delegate_task']));
   const first = parser.feed('Prosseguindo com o teste.\n[tool_calls] ');

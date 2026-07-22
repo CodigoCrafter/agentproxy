@@ -1,4 +1,4 @@
-import { loadConfig, removeRuntime, writeRuntime } from './config.js';
+import { applyHermesProfile, loadConfig, removeRuntime, saveConfig, writeRuntime } from './config.js';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { ProviderRegistry } from './providers/registry.js';
@@ -7,7 +7,8 @@ import { createApiServer } from './server/http.js';
 import { listenWithPortRotation } from './server/port.js';
 
 export async function startDaemon(): Promise<void> {
-  const config = await loadConfig();
+  const config = applyHermesProfile(await loadConfig());
+  await saveConfig(config);
   const registry = new ProviderRegistry(config);
   let stopping = false;
   const servers: ReturnType<typeof createApiServer>[] = [];

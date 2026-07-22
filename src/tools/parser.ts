@@ -201,6 +201,13 @@ export class StreamingToolParser {
       .replace(/\[\/?tool_calls\]/gi, '')
       .replace(/<\/?tool_calls?>/gi, '')
       .trim();
+    const colonHeadless = candidate.match(/^"?\s*:\s*"([A-Za-z_][\w-]*)"\s*,\s*"arguments"\s*:/);
+    if (colonHeadless && this.isAllowed(colonHeadless[1])) {
+      candidate = candidate.replace(/^"?\s*:\s*"/, '{"name":"');
+    }
+    if (this.looksLikeArgumentOnlyTerminalCall(candidate)) {
+      candidate = candidate.replace(/^"?\s*,\s*"arguments"\s*:/, '{"name":"terminal","arguments":');
+    }
     const headless = candidate.match(/^([A-Za-z_][\w-]*)"\s*,\s*"arguments"\s*:/);
     if (headless && this.isAllowed(headless[1])) candidate = `{"name":"${candidate}`;
     if (!candidate.startsWith('{') && !candidate.startsWith('[')) return null;
@@ -269,13 +276,17 @@ export class StreamingToolParser {
   private maybeTruncatedToolCall(value: string): boolean {
     if (!this.allowedTools?.size) return false;
     const trimmed = value.trimStart();
-    return /^(?:[A-Za-z_][\w-]*|"[A-Za-z_][\w-]*)"\s*:/.test(trimmed);
+    return /^(?:[A-Za-z_][\w-]*|"[A-Za-z_][\w-]*)"\s*:/.test(trimmed)
+      || /^"?\s*:\s*"[A-Za-z_][\w-]*"\s*,\s*"arguments"\s*:/.test(trimmed);
   }
 
   private maybeHeadlessToolCall(value: string): boolean {
     if (!this.allowedTools?.size) return false;
-    const match = value.trimStart().match(/^([A-Za-z_][\w-]*)"\s*,\s*"arguments"\s*:/);
-    return Boolean(match && this.allowedTools.has(match[1]));
+    const trimmed = value.trimStart();
+    const match = trimmed.match(/^([A-Za-z_][\w-]*)"\s*,\s*"arguments"\s*:/)
+      || trimmed.match(/^"?\s*:\s*"([A-Za-z_][\w-]*)"\s*,\s*"arguments"\s*:/);
+    return Boolean(match && this.allowedTools.has(match[1]))
+      || this.looksLikeArgumentOnlyTerminalCall(trimmed);
   }
 
   private looksLikeTruncatedToolCall(value: string): boolean {
@@ -293,6 +304,14 @@ export class StreamingToolParser {
 
   private looksLikeToolJson(value: string): boolean {
     return /"tool_calls"|"function"|"arguments"|"name"/.test(value);
+  }
+
+  private looksLikeArgumentOnlyTerminalCall(value: string): boolean {
+    return Boolean(
+      this.allowedTools?.has('terminal')
+      && /^"?\s*,\s*"arguments"\s*:/.test(value)
+      && /"command"\s*:/.test(value)
+    );
   }
 
   private firstIndexOf(markers: string[]): number {

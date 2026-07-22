@@ -16,10 +16,10 @@ test('Hermes profile clamps legacy context settings and extends upstream timeout
 
   applyHermesProfile(config);
 
-  assert.equal(config.context.maxHistoryMessages, 20);
+  assert.equal(config.context.maxHistoryMessages, 16);
   assert.equal(config.context.maxInputChars, 64_000);
   assert.equal(config.context.maxSystemChars, 24_000);
-  assert.equal(config.context.maxToolResultChars, 8_000);
+  assert.equal(config.context.maxToolResultChars, 4_000);
   assert.equal(config.context.exposeReasoning, false);
   assert.equal(config.providers.qwen.requestTimeoutMs, 180_000);
   assert.equal(config.providers.qwen.idleTimeoutMs, 75_000);

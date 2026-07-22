@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { createDefaultConfig } from '../config.js';
 import type { ProviderAdapter, ProviderRequest } from '../providers/types.js';
@@ -45,6 +48,7 @@ class MidStreamFailingProvider extends FakeProvider {
 }
 
 test('HTTP API authenticates requests and emits OpenAI tool calls', async () => {
+  const home = await useTempAgentProxyHome();
   const config = createDefaultConfig();
   config.apiKey = 'test-key';
   const provider = new FakeProvider();
@@ -82,12 +86,19 @@ test('HTTP API authenticates requests and emits OpenAI tool calls', async () => 
     assert.equal(body.choices[0].message.tool_calls[0].function.name, 'read_file');
     assert.doesNotMatch(provider.lastRequest?.prompt || '', /do not forward this/);
     assert.equal(provider.lastRequest?.idleTimeoutMs, provider.idleTimeoutMs);
+    const telemetry = await readFile(path.join(home, 'logs', 'telemetry.jsonl'), 'utf8');
+    assert.match(telemetry, /"type":"request_start"/);
+    assert.match(telemetry, /"type":"request_end"/);
+    assert.match(telemetry, /"toolNames":\[\]/);
+    assert.doesNotMatch(telemetry, /read it|do not forward this/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
   }
 });
 
 test('HTTP streaming reports failures before output as an HTTP error', async () => {
+  await useTempAgentProxyHome();
   const config = createDefaultConfig();
   config.apiKey = 'test-key';
   const provider = new FailingProvider();
@@ -112,11 +123,13 @@ test('HTTP streaming reports failures before output as an HTTP error', async () 
     assert.match(body.error.message, /needs activation/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
   }
 });
 
 
 test('HTTP streaming reports failures after output as an SSE error', async () => {
+  const home = await useTempAgentProxyHome();
   const config = createDefaultConfig();
   config.apiKey = 'test-key';
   const provider = new MidStreamFailingProvider();
@@ -141,7 +154,28 @@ test('HTTP streaming reports failures after output as an SSE error', async () =>
     assert.match(body, /partial/);
     assert.match(body, /agentproxy_upstream_error/);
     assert.match(body, /data: \[DONE\]/);
+    const telemetry = await readFile(path.join(home, 'logs', 'telemetry.jsonl'), 'utf8');
+    assert.match(telemetry, /"type":"stream_error"/);
+    assert.match(telemetry, /Qwen returned an empty response/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
   }
 });
+
+let previousAgentProxyHome: string | undefined;
+let tempAgentProxyHome: string | null = null;
+
+async function useTempAgentProxyHome(): Promise<string> {
+  previousAgentProxyHome = process.env.AGENTPROXY_HOME;
+  tempAgentProxyHome = await mkdtemp(path.join(os.tmpdir(), 'agentproxy-test-'));
+  process.env.AGENTPROXY_HOME = tempAgentProxyHome;
+  return tempAgentProxyHome;
+}
+
+async function restoreAgentProxyHome(): Promise<void> {
+  if (previousAgentProxyHome === undefined) delete process.env.AGENTPROXY_HOME;
+  else process.env.AGENTPROXY_HOME = previousAgentProxyHome;
+  if (tempAgentProxyHome) await rm(tempAgentProxyHome, { recursive: true, force: true });
+  tempAgentProxyHome = null;
+}

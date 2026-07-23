@@ -23,6 +23,9 @@ test('Hermes profile clamps legacy context settings and extends upstream timeout
   assert.equal(config.context.exposeReasoning, false);
   assert.equal(config.providers.qwen.requestTimeoutMs, 180_000);
   assert.equal(config.providers.qwen.idleTimeoutMs, 75_000);
+  assert.equal(config.providers.qwen.maxConcurrentRequests, 2);
+  assert.equal(config.providers.qwen.queueTimeoutMs, 120_000);
+  assert.equal(config.providers.qwen.rateLimitCooldownMs, 30 * 60_000);
   assert.equal(config.providers.kimi.requestTimeoutMs, 180_000);
   assert.equal(config.providers.kimi.idleTimeoutMs, 75_000);
 });
@@ -46,6 +49,9 @@ test('legacy Qwen-only configuration receives multi-provider defaults', () => {
 
   assert.equal(config.defaultModel, 'qwen/legacy-model');
   assert.equal(config.providers.qwen.idleTimeoutMs, 91_000);
+  assert.equal(config.providers.qwen.maxConcurrentRequests, 2);
+  assert.equal(config.providers.qwen.queueTimeoutMs, 120_000);
+  assert.equal(config.providers.qwen.rateLimitCooldownMs, 30 * 60_000);
   assert.equal(config.providers.kimi.enabled, false);
   assert.equal(config.providers.chatgpt.enabled, false);
   assert.equal(config.providers.gemini.enabled, false);

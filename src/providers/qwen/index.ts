@@ -24,11 +24,15 @@ interface QwenChunk {
 export class QwenProvider implements ProviderAdapter {
   readonly id = 'qwen';
   private readonly auth: QwenBrowserAuth;
+  private readonly requestGate: QwenRequestGate;
   private modelCache: { expiresAt: number; models: ModelInfo[] } | null = null;
   private readonly retryCooldownMs = 2_000;
+  private rateLimitedUntil = 0;
+  private rateLimitMessage = '';
 
   constructor(private readonly config: AgentProxyConfig) {
     this.auth = new QwenBrowserAuth(config);
+    this.requestGate = new QwenRequestGate(config.providers.qwen.maxConcurrentRequests);
   }
 
   get idleTimeoutMs(): number {
@@ -61,12 +65,17 @@ export class QwenProvider implements ProviderAdapter {
   }
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+    this.assertNotRateLimited();
+    const releaseRequestSlot = await this.requestGate.acquire(request.signal, this.config.providers.qwen.queueTimeoutMs);
     const model = request.model.replace(/-no-thinking$/, '');
     const upstreamSessionId = this.upstreamSessionId(request);
-    const { session, release } = await this.auth.acquireSession(upstreamSessionId, model);
+    let releaseSession: (() => void) | undefined;
     let shouldInvalidateSession = false;
     let streamError: unknown;
     try {
+      this.assertNotRateLimited();
+      const { session, release } = await this.auth.acquireSession(upstreamSessionId, model);
+      releaseSession = release;
       const timestamp = Math.floor(Date.now() / 1000);
       const payload = {
         stream: true,
@@ -123,19 +132,24 @@ export class QwenProvider implements ProviderAdapter {
       } catch (error) {
         shouldInvalidateSession = true;
         streamError = error;
+        if (isQwenRateLimitError(error)) this.openRateLimitCircuit(error);
         throw error;
       } finally {
         clearTimeout(totalTimer);
         request.signal.removeEventListener('abort', abort);
       }
+    } catch (error) {
+      if (isQwenRateLimitError(error)) this.openRateLimitCircuit(error);
+      throw error;
     } finally {
-      release();
+      releaseSession?.();
       if (shouldInvalidateSession) {
         await this.auth.invalidateSession(upstreamSessionId);
         if (this.needsRetryCooldown(streamError)) await delay(this.retryCooldownMs);
       } else {
         await this.auth.invalidateSession(upstreamSessionId);
       }
+      releaseRequestSlot();
     }
   }
 
@@ -278,6 +292,21 @@ export class QwenProvider implements ProviderAdapter {
     return `${request.sessionId || '__default__'}:${request.requestId}`;
   }
 
+  private assertNotRateLimited(): void {
+    const remainingMs = this.rateLimitedUntil - Date.now();
+    if (remainingMs <= 0) return;
+    throw Object.assign(
+      new Error(`${this.rateLimitMessage || 'Qwen is temporarily rate limited.'} Retry after about ${Math.ceil(remainingMs / 60_000)} minute(s).`),
+      { statusCode: 429 }
+    );
+  }
+
+  private openRateLimitCircuit(error: unknown): void {
+    const cooldownMs = Math.max(1_000, this.config.providers.qwen.rateLimitCooldownMs);
+    this.rateLimitedUntil = Math.max(this.rateLimitedUntil, Date.now() + cooldownMs);
+    this.rateLimitMessage = (error as Error | undefined)?.message || 'Qwen upstream rate limit reached.';
+  }
+
   private requestHeaders(source: Record<string, string>, referer: string): Record<string, string> {
     return {
       accept: 'text/event-stream, application/json',
@@ -306,6 +335,71 @@ export class QwenProvider implements ProviderAdapter {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export class QwenRequestGate {
+  private active = 0;
+  private readonly queue: QwenQueueEntry[] = [];
+
+  constructor(private readonly maxConcurrentRequests: number) {}
+
+  acquire(signal: AbortSignal, timeoutMs: number): Promise<() => void> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    if (this.maxConcurrentRequests <= 0 || this.active < this.maxConcurrentRequests) {
+      this.active++;
+      return Promise.resolve(() => this.release());
+    }
+    return new Promise((resolve, reject) => {
+      let entry: QwenQueueEntry;
+      entry = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.removeQueued(entry);
+          reject(Object.assign(new Error(`Qwen concurrency queue exceeded ${timeoutMs}ms.`), { statusCode: 503 }));
+        }, timeoutMs),
+        abort: () => {
+          this.removeQueued(entry);
+          reject(signal.reason instanceof Error ? signal.reason : new Error('Request aborted while waiting for Qwen concurrency slot.'));
+        },
+        signal
+      };
+      signal.addEventListener('abort', entry.abort, { once: true });
+      this.queue.push(entry);
+    });
+  }
+
+  private release(): void {
+    const next = this.queue.shift();
+    if (!next) {
+      this.active = Math.max(0, this.active - 1);
+      return;
+    }
+    clearTimeout(next.timer);
+    next.signal.removeEventListener('abort', next.abort);
+    next.resolve(() => this.release());
+  }
+
+  private removeQueued(entry: QwenQueueEntry): void {
+    const index = this.queue.indexOf(entry);
+    if (index >= 0) this.queue.splice(index, 1);
+    clearTimeout(entry.timer);
+    entry.signal.removeEventListener('abort', entry.abort);
+  }
+}
+
+interface QwenQueueEntry {
+  resolve: (release: () => void) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+  abort: () => void;
+  signal: AbortSignal;
+}
+
+export function isQwenRateLimitError(error: unknown): boolean {
+  const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+  const message = (error as Error | undefined)?.message || '';
+  return statusCode === 429 || /RateLimited|upper limit|rate limit/i.test(message);
 }
 
 export function reconcileQwenContent(previous: string, current: string): string {

@@ -12,6 +12,8 @@ Gateway local OpenAI-compatible otimizado para agentes de IA. O primeiro alvo e 
 - Endpoint `/v1/models` com descoberta dos modelos do Qwen.
 - Rotacao automatica quando a porta preferida estiver ocupada.
 - Perfil Hermes stateless: o proxy nao reaproveita o `parent_id` do Qwen.
+- Isolamento de `chat_id` por requisicao e limite global de concorrencia para evitar disputa entre subagentes.
+- Circuit breaker para rate limit do Qwen, evitando retries longos quando o upstream ja bloqueou a conta/sessao.
 - Remocao de reasoning antigo, janela de historico e limite para resultados de ferramentas.
 - Parser incremental de `<tool_call>` e retorno de `tool_calls` estruturado.
 - Timeout de conexao, duracao total, inatividade e cancelamento do cliente.
@@ -134,7 +136,7 @@ O arquivo `~/.agentproxy/config.json` controla:
 - Quantidade de mensagens e caracteres de contexto.
 - Tamanho maximo de resultados de ferramentas.
 - Exposicao ou ocultacao de reasoning.
-- Navegador, timeouts e ativacao do Qwen.
+- Navegador, timeouts, concorrencia, cooldown de rate limit e ativacao do Qwen.
 
 Credenciais, cookies e perfis de navegador ficam fora do repositorio em `~/.agentproxy/`.
 
@@ -173,6 +175,10 @@ proxy hermes
 ```
 
 Se aparecer `Provider enabled but not implemented`, algum provider experimental esta habilitado na configuracao, mas ainda nao tem adaptador estavel no codigo publicado. No estado atual do projeto, mantenha somente o Qwen habilitado em `~/.agentproxy/config.json`.
+
+Se aparecer `Qwen upstream error: RateLimited: You've reached the upper limit for today's usage`, o limite veio do proprio Qwen web. O AgentProxy nao consegue remover esse bloqueio, mas evita continuar martelando a conta: novas chamadas falham rapido durante o cooldown configurado em `providers.qwen.rateLimitCooldownMs`. Para tarefas com muitos subagentes, reduza o fan-out ou aguarde o reset do limite do Qwen.
+
+Por padrao, o Qwen usa no maximo 2 requisicoes upstream simultaneas (`providers.qwen.maxConcurrentRequests`). Isso nao volta a compartilhar o mesmo chat entre subagentes; cada requisicao continua usando um `chat_id` isolado. O limite serve apenas para proteger a sessao web contra bloqueio por excesso de uso.
 
 Se houver conflito entre dependencias do Windows e do WSL, reinstale dentro do WSL. Dependencias nativas, como `esbuild` em outros projetos ou binarios do Playwright, devem ser instaladas no mesmo ambiente onde o proxy sera executado:
 

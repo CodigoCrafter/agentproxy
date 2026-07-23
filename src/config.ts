@@ -19,6 +19,9 @@ export interface ProviderConfig {
 export interface BrowserProviderConfig extends ProviderConfig {
   browser: 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge';
   headless: boolean;
+  maxConcurrentRequests: number;
+  queueTimeoutMs: number;
+  rateLimitCooldownMs: number;
 }
 
 export interface AgentProxyConfig {
@@ -104,7 +107,10 @@ export function createDefaultConfig(): AgentProxyConfig {
         browser: 'chromium',
         headless: true,
         requestTimeoutMs: 180_000,
-        idleTimeoutMs: 75_000
+        idleTimeoutMs: 75_000,
+        maxConcurrentRequests: 2,
+        queueTimeoutMs: 120_000,
+        rateLimitCooldownMs: 30 * 60_000
       },
       kimi: {
         enabled: false,

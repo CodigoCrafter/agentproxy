@@ -18,6 +18,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js on --foreground",
+    "install:windows": "powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
     "install:wsl": "bash scripts/install-wsl.sh",
     "test": "tsx --test src/*.test.ts src/**/*.test.ts src/**/**/*.test.ts",
     "check": "npm run build && npm test",

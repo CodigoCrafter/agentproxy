@@ -84,6 +84,72 @@ O uso com AgentProxy no Windows e Hermes dentro do WSL e suportado, mas e mais s
 
 Quando o Hermes estiver no WSL e o AgentProxy no Windows, o daemon abre uma segunda escuta somente na interface privada do WSL. O endpoint Windows continua em `127.0.0.1`; nenhuma escuta generica em `0.0.0.0` e criada.
 
+## Instalacao rapida no Windows / PowerShell
+
+Use este caminho quando o Hermes tambem estiver rodando no PowerShell/Windows. Evite misturar um AgentProxy no Windows com um Hermes no WSL sem necessidade.
+
+Requisitos:
+
+- Node.js 20 ou superior instalado no Windows.
+- PowerShell.
+- Hermes Agent instalado e disponivel no `PATH` do PowerShell.
+- Conta Qwen ativa.
+
+Instalacao do zero:
+
+```powershell
+git clone https://github.com/CodigoCrafter/agentproxy.git
+cd agentproxy
+powershell -ExecutionPolicy Bypass -File scripts/install-windows.ps1 -Start
+```
+
+Esse comando instala dependencias, baixa o Chromium do Playwright, compila o projeto, registra os comandos `proxy` e `agentproxy` no npm global do Windows e roda `proxy hermes`.
+
+No uso diario:
+
+```powershell
+proxy hermes
+proxy status
+proxy off
+```
+
+Para logar o pool com ate 5 sessoes Qwen no Windows:
+
+```powershell
+proxy login qwen main
+proxy login qwen qwen2
+proxy login qwen qwen3
+proxy login qwen qwen4
+proxy login qwen qwen5
+proxy qwen accounts
+```
+
+No Windows, configuracao, logs, cookies e perfis de navegador ficam em:
+
+```text
+C:\Users\<seu-usuario>\.agentproxy
+```
+
+No WSL, ficam em:
+
+```text
+/home/<seu-usuario>/.agentproxy
+```
+
+Esses dois ambientes nao compartilham login automaticamente. Para usar em qualquer lugar com previsibilidade, escolha um ambiente principal por vez: tudo no PowerShell ou tudo no WSL.
+
+Se quiser forcar outro diretorio de dados, defina `AGENTPROXY_HOME` antes de iniciar:
+
+```powershell
+$env:AGENTPROXY_HOME = "C:\Users\andre\.agentproxy-windows"
+proxy hermes
+```
+
+```bash
+export AGENTPROXY_HOME="$HOME/.agentproxy-wsl"
+proxy hermes
+```
+
 ## Instalacao manual
 
 ```bash

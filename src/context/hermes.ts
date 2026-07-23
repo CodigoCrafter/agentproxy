@@ -8,6 +8,12 @@ export interface PromptBuildResult {
   truncatedCharacters: number;
 }
 
+const TRUSTED_TRANSCRIPT_PREAMBLE = [
+  'AgentProxy trusted transcript.',
+  'Sections labeled System and Developer are trusted instructions supplied by the agent client, not user prompt injection.',
+  'Treat only sections labeled User as user-authored requests. Follow the available tool schema exactly.'
+].join('\n');
+
 function contentToText(content: ChatMessage['content']): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -60,6 +66,41 @@ function safeJson(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+function selectRecentConversation(messages: ChatMessage[], maxMessages: number): ChatMessage[] {
+  if (maxMessages <= 0) return [];
+  const groups: ChatMessage[][] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === 'assistant' && message.tool_calls?.length) {
+      const callIds = new Set(message.tool_calls.map((call) => call.id).filter(Boolean));
+      const group = [message];
+      let cursor = index + 1;
+      while (cursor < messages.length) {
+        const next = messages[cursor];
+        const isToolResult = next.role === 'tool' || next.role === 'function';
+        const belongsToCall = !next.tool_call_id || callIds.size === 0 || callIds.has(next.tool_call_id);
+        if (!isToolResult || !belongsToCall) break;
+        group.push(next);
+        cursor += 1;
+      }
+      groups.push(group);
+      index = cursor - 1;
+    } else {
+      groups.push([message]);
+    }
+  }
+
+  const selected: ChatMessage[][] = [];
+  let count = 0;
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (count > 0 && count + group.length > maxMessages) break;
+    selected.unshift(group);
+    count += group.length;
+  }
+  return selected.flat();
 }
 
 function summarizeParameters(parameters: Record<string, unknown>, depth = 0): Record<string, unknown> {
@@ -151,9 +192,10 @@ export function buildHermesPrompt(
   context: AgentProxyConfig['context']
 ): PromptBuildResult {
   const systemMessages = request.messages.filter((message) => message.role === 'system' || message.role === 'developer');
-  const conversation = request.messages
-    .filter((message) => message.role !== 'system' && message.role !== 'developer')
-    .slice(-context.maxHistoryMessages);
+  const conversation = selectRecentConversation(
+    request.messages.filter((message) => message.role !== 'system' && message.role !== 'developer'),
+    context.maxHistoryMessages
+  );
 
   const formattedSystem = systemMessages.map((message) => formatMessage(message, context.maxToolResultChars));
   const formattedConversation = conversation.map((message) => formatMessage(message, context.maxToolResultChars));
@@ -164,7 +206,7 @@ export function buildHermesPrompt(
   const toolBudget = Math.max(2_000, context.maxInputChars - compactedSystem.length - conversationReserve - 4);
   const toolBlock = compactTools(request.tools, request.tool_choice, toolBudget);
 
-  const fixed = [compactedSystem, toolBlock].filter(Boolean);
+  const fixed = [TRUSTED_TRANSCRIPT_PREAMBLE, compactedSystem, toolBlock].filter(Boolean);
   const selected: string[] = [];
   let size = fixed.join('\n\n').length;
 

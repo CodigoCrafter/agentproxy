@@ -14,11 +14,12 @@ test('parses a tool call split across stream chunks', () => {
   assert.deepEqual(second.toolCalls[0].arguments, { path: 'a.txt' });
 });
 
-test('returns malformed calls as ordinary text', () => {
+test('flags malformed explicit calls instead of returning them as ordinary text', () => {
   const parser = new StreamingToolParser();
   const output = parser.feed('<tool_call>{bad json}</tool_call>');
   assert.equal(output.toolCalls.length, 0);
-  assert.match(output.text, /bad json/);
+  assert.equal(output.text, '');
+  assert.match(output.malformedToolCall || '', /bad json/);
 });
 
 test('recovers a leaked bare JSON tool call on flush', () => {
@@ -197,11 +198,12 @@ test('flags an interleaved legacy block as malformed instead of leaking it', () 
   assert.match(final.malformedToolCall || '', /delegate_task/);
 });
 
-test('recovers leaked fenced JSON but rejects tools not offered by the client', () => {
+test('flags leaked fenced JSON for tools not offered by the client', () => {
   const parser = new StreamingToolParser(undefined, new Set(['read_file']));
   const output = parser.feed('```json\n{"name":"terminal","arguments":{"command":"whoami"}}\n```');
   const final = parser.flush();
 
   assert.equal(output.toolCalls.length + final.toolCalls.length, 0);
-  assert.match(output.text + final.text, /terminal/);
+  assert.equal(output.text + final.text, '');
+  assert.match(final.malformedToolCall || '', /terminal/);
 });

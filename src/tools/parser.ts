@@ -31,6 +31,7 @@ export class StreamingToolParser {
     this.buffer += chunk;
     let text = '';
     const toolCalls: ParsedToolCall[] = [];
+    let malformedToolCall: string | undefined;
 
     while (this.buffer) {
       const xmlStartIndex = this.buffer.indexOf(START);
@@ -89,10 +90,13 @@ export class StreamingToolParser {
       this.buffer = this.buffer.slice(endIndex + END.length);
       const parsed = this.parse(raw);
       if (parsed) toolCalls.push(parsed);
-      else text += `${START}${raw}${END}`;
+      else {
+        malformedToolCall = `${START}${raw}${END}`;
+        break;
+      }
     }
 
-    return { text, toolCalls };
+    return { text, toolCalls, malformedToolCall };
   }
 
   flush(): ParserOutput {
@@ -299,6 +303,7 @@ export class StreamingToolParser {
     const trimmed = value.trimStart();
     if (/\[\/?tool_calls\]|<\/?tool_calls?>/i.test(trimmed)) return true;
     return this.maybeHeadlessToolCall(trimmed)
+      || this.maybeLeakedJsonToolCall(trimmed)
       || ((trimmed.startsWith('{') || trimmed.startsWith('[')) && this.looksLikeToolJson(trimmed));
   }
 

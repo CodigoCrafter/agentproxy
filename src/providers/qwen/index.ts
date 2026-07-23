@@ -25,6 +25,7 @@ export class QwenProvider implements ProviderAdapter {
   readonly id = 'qwen';
   private readonly auth: QwenBrowserAuth;
   private modelCache: { expiresAt: number; models: ModelInfo[] } | null = null;
+  private readonly retryCooldownMs = 2_000;
 
   constructor(private readonly config: AgentProxyConfig) {
     this.auth = new QwenBrowserAuth(config);
@@ -63,6 +64,7 @@ export class QwenProvider implements ProviderAdapter {
     const model = request.model.replace(/-no-thinking$/, '');
     const { session, release } = await this.auth.acquireSession(request.sessionId, model);
     let shouldInvalidateSession = false;
+    let streamError: unknown;
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const payload = {
@@ -119,13 +121,17 @@ export class QwenProvider implements ProviderAdapter {
         yield* this.readQwenStream(response.body, request.idleTimeoutMs, controller);
       } catch (error) {
         shouldInvalidateSession = true;
+        streamError = error;
         throw error;
       } finally {
         clearTimeout(totalTimer);
         request.signal.removeEventListener('abort', abort);
       }
     } finally {
-      if (shouldInvalidateSession) await this.auth.invalidateSession(request.sessionId);
+      if (shouldInvalidateSession) {
+        await this.auth.invalidateSession(request.sessionId);
+        if (this.needsRetryCooldown(streamError)) await delay(this.retryCooldownMs);
+      }
       release();
     }
   }
@@ -146,7 +152,8 @@ export class QwenProvider implements ProviderAdapter {
     let targetResponseId: string | null = null;
     let thoughtCount = 0;
     let debugSample = '';
-    let receivedOutput = false;
+    let receivedReasoning = false;
+    let receivedAnswer = false;
 
     try {
       while (true) {
@@ -188,14 +195,14 @@ export class QwenProvider implements ProviderAdapter {
               const text = thoughts.slice(thoughtCount).join('\n');
               thoughtCount = thoughts.length;
               if (text) {
-                receivedOutput = true;
+                receivedReasoning = true;
                 yield { type: 'reasoning', text };
               }
             }
           } else if ((delta.phase === 'answer' || !delta.phase) && typeof delta.content === 'string') {
             if (delta.content && delta.content !== 'FINISHED') {
               answerContent = reconcileQwenContent(answerContent, delta.content);
-              receivedOutput = true;
+              receivedAnswer = true;
             }
           }
         }
@@ -219,8 +226,11 @@ export class QwenProvider implements ProviderAdapter {
           }
         }
       }
-      if (!receivedOutput) {
+      if (!receivedReasoning && !receivedAnswer) {
         throw new Error('Qwen returned an empty response. The web session may be rate-limited or stale.');
+      }
+      if (!answerContent) {
+        throw new Error('Qwen returned reasoning but no final answer. Retry with a no-thinking model.');
       }
       if (answerContent) yield { type: 'text', text: answerContent };
       yield { type: 'done' };
@@ -256,6 +266,11 @@ export class QwenProvider implements ProviderAdapter {
     return Object.assign(new Error(`Qwen upstream error: ${code}: ${detail}`), { statusCode });
   }
 
+  private needsRetryCooldown(error: unknown): boolean {
+    const message = (error as Error | undefined)?.message || '';
+    return /timeout|chat is in progress|has been closed/i.test(message);
+  }
+
   private requestHeaders(source: Record<string, string>, referer: string): Record<string, string> {
     return {
       accept: 'text/event-stream, application/json',
@@ -280,6 +295,10 @@ export class QwenProvider implements ProviderAdapter {
       capabilities: { streaming: true, tools: true, reasoning: true, vision: false }
     };
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function reconcileQwenContent(previous: string, current: string): string {

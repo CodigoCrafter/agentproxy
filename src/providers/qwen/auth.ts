@@ -81,7 +81,7 @@ export class QwenBrowserAuth {
 
   async getBasicHeaders(): Promise<Record<string, string>> {
     const context = await this.ensureContext();
-    const page = context.pages()[0] || await context.newPage();
+    const page = context.pages()[0] || await this.newPageWithRecovery();
     if (!page.url().includes('chat.qwen.ai')) {
       await page.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
     }
@@ -118,7 +118,8 @@ export class QwenBrowserAuth {
   }
 
   private async ensureContext(): Promise<BrowserContext> {
-    if (this.context) return this.context;
+    if (this.context && this.isContextUsable(this.context)) return this.context;
+    await this.resetContext();
     this.context = await this.launch(this.config.providers.qwen.headless);
     this.cleanupTimer = setInterval(() => void this.cleanup(), 5 * 60 * 1000);
     this.cleanupTimer.unref();
@@ -144,22 +145,29 @@ export class QwenBrowserAuth {
     await context.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
+    context.once('close', () => {
+      if (this.context === context) {
+        if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+        this.cleanupTimer = null;
+        this.context = null;
+        this.sessions.clear();
+      }
+    });
     this.context = context;
     return context;
   }
 
   private async ensureSession(sessionId: string, model: string): Promise<SessionState> {
     const existing = this.sessions.get(sessionId);
-    if (existing?.model === model) return existing;
+    if (existing?.model === model && !existing.page.isClosed()) return existing;
     if (existing) {
       await existing.page.close().catch(() => undefined);
       this.sessions.delete(sessionId);
     }
-    const context = await this.ensureContext();
-    const page = await context.newPage();
+    const page = await this.newPageWithRecovery();
     await page.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
 
-    if (!(await this.hasSession(context, page))) {
+    if (!(await this.hasSession(page.context(), page))) {
       await page.close();
       throw new Error('Sessao do Qwen expirada. Execute: proxy setup');
     }
@@ -261,6 +269,37 @@ export class QwenBrowserAuth {
       this.sessionLocks.set(sessionId, lock);
     }
     return lock;
+  }
+
+  private async newPageWithRecovery(): Promise<Page> {
+    try {
+      return await (await this.ensureContext()).newPage();
+    } catch (error) {
+      if (!this.isClosedContextError(error)) throw error;
+      await this.resetContext();
+      return (await this.ensureContext()).newPage();
+    }
+  }
+
+  private isContextUsable(context: BrowserContext): boolean {
+    try {
+      context.pages();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private isClosedContextError(error: unknown): boolean {
+    return /has been closed|Target page, context or browser has been closed/i.test((error as Error).message || '');
+  }
+
+  private async resetContext(): Promise<void> {
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.cleanupTimer = null;
+    this.sessions.clear();
+    if (this.context) await this.context.close().catch(() => undefined);
+    this.context = null;
   }
 
   private async cleanup(): Promise<void> {

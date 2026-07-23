@@ -38,6 +38,47 @@ test('Hermes prompt keeps recent messages and truncates large tool output', () =
   assert.ok(result.prompt.length < 500);
 });
 
+test('Hermes prompt keeps assistant tool call and matching tool result together', () => {
+  const config = createDefaultConfig();
+  config.context.maxHistoryMessages = 2;
+  const result = buildHermesPrompt({
+    messages: [
+      { role: 'system', content: 'Rules' },
+      { role: 'user', content: 'old request' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_abc', function: { name: 'terminal', arguments: '{"command":"pwd"}' } }]
+      },
+      { role: 'tool', name: 'terminal', tool_call_id: 'call_abc', content: '{"output":"/home/andre","exit_code":0}' }
+    ]
+  }, config.context);
+
+  assert.doesNotMatch(result.prompt, /old request/);
+  assert.match(result.prompt, /call_abc/);
+  assert.match(result.prompt, /"output":"\/home\/andre"/);
+});
+
+test('Hermes prompt does not include an old tool result without its assistant call', () => {
+  const config = createDefaultConfig();
+  config.context.maxHistoryMessages = 1;
+  const result = buildHermesPrompt({
+    messages: [
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_old', function: { name: 'terminal', arguments: '{"command":"pwd"}' } }]
+      },
+      { role: 'tool', name: 'terminal', tool_call_id: 'call_old', content: '{"output":"old"}' },
+      { role: 'user', content: 'fresh request' }
+    ]
+  }, config.context);
+
+  assert.match(result.prompt, /fresh request/);
+  assert.doesNotMatch(result.prompt, /call_old/);
+  assert.doesNotMatch(result.prompt, /"output":"old"/);
+});
+
 test('Hermes prompt injects compact tool definitions', () => {
   const config = createDefaultConfig();
   const result = buildHermesPrompt({

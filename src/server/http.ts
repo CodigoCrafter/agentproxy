@@ -12,7 +12,9 @@ import {
 } from '../diagnostics/telemetry.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { StreamingToolParser } from '../tools/parser.js';
-import type { ChatCompletionRequest, Usage } from '../types.js';
+import type { ChatCompletionRequest, ProviderStreamEvent, Usage } from '../types.js';
+
+const STABLE_QWEN_TOOL_FALLBACK = 'qwen/qwen3.7-max-no-thinking';
 
 export function createApiServer(
   config: AgentProxyConfig,
@@ -98,26 +100,148 @@ async function chatCompletion(
     if (!response.writableEnded) controller.abort(new Error('Client disconnected'));
   });
 
-  const providerEvents = provider.stream({
-    model,
-    prompt: prompt.prompt,
-    sessionId,
-    thinking: !model.endsWith('-no-thinking'),
-    signal: controller.signal,
-    idleTimeoutMs: provider.idleTimeoutMs
-  });
-
   try {
+    const attempt = await prepareProviderEvents({
+      provider,
+      model,
+      modelId,
+      prompt: prompt.prompt,
+      sessionId,
+      body,
+      config,
+      signal: controller.signal
+    });
     if (body.stream) {
-      const events = await primeStream(providerEvents);
-      await streamResponse(response, events, modelId, body, config, telemetry, startedAt);
+      const events = await primeStream(attempt.events);
+      await streamResponse(response, events, attempt.modelId, body, config, telemetry, startedAt);
     } else {
-      await jsonResponse(response, providerEvents, modelId, prompt.prompt, body, config.context.exposeReasoning, telemetry, startedAt);
+      await jsonResponse(response, attempt.events, attempt.modelId, prompt.prompt, body, config.context.exposeReasoning, telemetry, startedAt);
     }
   } catch (error) {
-    await recordRequestError(telemetry, elapsedMs(startedAt), error);
-    throw error;
+    const fallbackModelId = fallbackModelFor(config, modelId, model, provider.id, body, error);
+    if (!fallbackModelId || response.headersSent) {
+      await recordRequestError(telemetry, elapsedMs(startedAt), error);
+      throw error;
+    }
+    process.stderr.write(`[AgentProxy] retrying ${modelId} with fallback ${fallbackModelId}: ${(error as Error).message}\n`);
+    try {
+      const fallback = registry.resolve(fallbackModelId);
+      const attempt = await prepareProviderEvents({
+        provider: fallback.provider,
+        model: fallback.model,
+        modelId: fallbackModelId,
+        prompt: prompt.prompt,
+        sessionId,
+        body,
+        config,
+        signal: controller.signal
+      });
+      if (body.stream) {
+        const events = await primeStream(attempt.events);
+        await streamResponse(response, events, attempt.modelId, body, config, telemetry, startedAt);
+      } else {
+        await jsonResponse(response, attempt.events, attempt.modelId, prompt.prompt, body, config.context.exposeReasoning, telemetry, startedAt);
+      }
+    } catch (fallbackError) {
+      await recordRequestError(telemetry, elapsedMs(startedAt), fallbackError);
+      throw fallbackError;
+    }
   }
+}
+
+async function prepareProviderEvents(options: {
+  provider: ReturnType<ProviderRegistry['resolve']>['provider'];
+  model: string;
+  modelId: string;
+  prompt: string;
+  sessionId: string;
+  body: ChatCompletionRequest;
+  config: AgentProxyConfig;
+  signal: AbortSignal;
+}): Promise<{ modelId: string; events: AsyncIterable<ProviderStreamEvent> }> {
+  const events = options.provider.stream({
+    model: options.model,
+    prompt: options.prompt,
+    sessionId: options.sessionId,
+    thinking: !options.model.endsWith('-no-thinking'),
+    signal: options.signal,
+    idleTimeoutMs: options.provider.idleTimeoutMs
+  });
+
+  if (!shouldPrevalidateToolStream(options.provider.id, options.model, options.body)) {
+    return { modelId: options.modelId, events };
+  }
+
+  const collected = await collectProviderEvents(events);
+  validateToolStream(collected, options.body);
+  return { modelId: options.modelId, events: iterableFromArray(collected) };
+}
+
+function shouldPrevalidateToolStream(providerId: string, model: string, body: ChatCompletionRequest): boolean {
+  return providerId === 'qwen' && Boolean(body.tools?.length) && !model.endsWith('-no-thinking');
+}
+
+async function collectProviderEvents(events: AsyncIterable<ProviderStreamEvent>): Promise<ProviderStreamEvent[]> {
+  const collected: ProviderStreamEvent[] = [];
+  for await (const event of events) collected.push(event);
+  return collected;
+}
+
+async function* iterableFromArray<T>(values: T[]): AsyncIterable<T> {
+  yield* values;
+}
+
+function validateToolStream(events: ProviderStreamEvent[], body: ChatCompletionRequest): void {
+  const parser = new StreamingToolParser(undefined, allowedToolNames(body));
+  let text = '';
+  for (const event of events) {
+    if (event.type !== 'text') continue;
+    text += event.text;
+    const parsed = parser.feed(event.text);
+    rejectMalformedToolCall(parsed.malformedToolCall);
+  }
+  const remaining = parser.flush();
+  rejectMalformedToolCall(remaining.malformedToolCall);
+  text += remaining.text;
+  if (parser.getToolCallCount() === 0 && looksLikeToolAvailabilityHallucination(text, body)) {
+    throw Object.assign(
+      new Error('Upstream model claimed an available tool does not exist; retry with a no-thinking model.'),
+      { statusCode: 502 }
+    );
+  }
+}
+
+function fallbackModelFor(
+  config: AgentProxyConfig,
+  requestedModelId: string,
+  providerModel: string,
+  providerId: string,
+  body: ChatCompletionRequest,
+  error: unknown
+): string | null {
+  if (providerId !== 'qwen' || !body.tools?.length || providerModel.endsWith('-no-thinking')) return null;
+  if (!isRecoverableThinkingFailure(error)) return null;
+  const fallback = requestedModelId !== STABLE_QWEN_TOOL_FALLBACK
+    ? STABLE_QWEN_TOOL_FALLBACK
+    : noThinkingModelId(config.defaultModel || requestedModelId);
+  return fallback !== requestedModelId ? fallback : null;
+}
+
+function noThinkingModelId(modelId: string): string {
+  return modelId.endsWith('-no-thinking') ? modelId : `${modelId}-no-thinking`;
+}
+
+function isRecoverableThinkingFailure(error: unknown): boolean {
+  const message = (error as Error | undefined)?.message || '';
+  const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+  return statusCode === 500 || statusCode === 502 || /tool call|timeout|empty response|no final answer|chat is in progress|has been closed/i.test(message);
+}
+
+function looksLikeToolAvailabilityHallucination(text: string, body: ChatCompletionRequest): boolean {
+  const normalized = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const unavailablePattern = /tool .{1,80}(?:does not exist|does not exists|not available|not found)|ferramenta .{1,80}(?:nao existe|indisponivel)|schema .{1,120}(?:only includes|so inclui)/i;
+  if (!unavailablePattern.test(normalized)) return false;
+  return (body.tools || []).some((tool) => normalized.includes(tool.function.name.toLowerCase()));
 }
 
 async function primeStream<T>(events: AsyncIterable<T>): Promise<AsyncIterable<T>> {

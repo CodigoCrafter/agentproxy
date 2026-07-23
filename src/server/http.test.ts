@@ -47,6 +47,22 @@ class MidStreamFailingProvider extends FakeProvider {
   }
 }
 
+class ToolUnavailableProvider extends FakeProvider {
+  modelsSeen: string[] = [];
+
+  override async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+    this.lastRequest = request;
+    this.modelsSeen.push(request.model);
+    if (request.model.endsWith('-no-thinking')) {
+      yield { type: 'text', text: '<tool_call>{"name":"terminal","arguments":{"command":"pwd"}}</tool_call>' };
+      yield { type: 'done' };
+      return;
+    }
+    yield { type: 'text', text: 'Tool terminal does not exists.' };
+    yield { type: 'done' };
+  }
+}
+
 test('HTTP API authenticates requests and emits OpenAI tool calls', async () => {
   const home = await useTempAgentProxyHome();
   const config = createDefaultConfig();
@@ -157,6 +173,51 @@ test('HTTP streaming reports failures after output as an SSE error', async () =>
     const telemetry = await readFile(path.join(home, 'logs', 'telemetry.jsonl'), 'utf8');
     assert.match(telemetry, /"type":"stream_error"/);
     assert.match(telemetry, /Qwen returned an empty response/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
+  }
+});
+
+test('HTTP streaming falls back when thinking claims an available tool does not exist', async () => {
+  await useTempAgentProxyHome();
+  const config = createDefaultConfig();
+  config.apiKey = 'test-key';
+  config.defaultModel = 'qwen/qwen3.8-max-preview';
+  const provider = new ToolUnavailableProvider();
+  const registry = {
+    listModels: () => provider.listModels(),
+    resolve: (modelId: string) => ({ provider, model: modelId.replace(/^qwen\//, '') })
+  } as unknown as ProviderRegistry;
+  const server = createApiServer(config, registry, () => undefined);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+
+  try {
+    const completion = await fetch(`http://127.0.0.1:${address.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen/qwen3.8-max-preview',
+        stream: true,
+        messages: [{ role: 'user', content: 'run pwd' }],
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'terminal',
+            parameters: { type: 'object', properties: { command: { type: 'string' } } }
+          }
+        }]
+      })
+    });
+    assert.equal(completion.status, 200);
+    const body = await completion.text();
+    assert.deepEqual(provider.modelsSeen, ['qwen3.8-max-preview', 'qwen3.7-max-no-thinking']);
+    assert.match(body, /qwen\/qwen3\.7-max-no-thinking/);
+    assert.match(body, /"name":"terminal"/);
+    assert.doesNotMatch(body, /does not exists/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await restoreAgentProxyHome();

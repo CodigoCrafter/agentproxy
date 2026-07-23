@@ -63,6 +63,23 @@ class ToolUnavailableProvider extends FakeProvider {
   }
 }
 
+class SlowThinkingProvider extends FakeProvider {
+  modelsSeen: string[] = [];
+
+  override async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
+    this.lastRequest = request;
+    this.modelsSeen.push(request.model);
+    if (request.model.endsWith('-no-thinking')) {
+      yield { type: 'text', text: '<tool_call>{"name":"terminal","arguments":{"command":"pwd"}}</tool_call>' };
+      yield { type: 'done' };
+      return;
+    }
+    await waitForAbortOrDelay(request.signal, 1_000);
+    yield { type: 'text', text: '<tool_call>{"name":"terminal","arguments":{"command":"pwd"}}</tool_call>' };
+    yield { type: 'done' };
+  }
+}
+
 test('HTTP API authenticates requests and emits OpenAI tool calls', async () => {
   const home = await useTempAgentProxyHome();
   const config = createDefaultConfig();
@@ -224,6 +241,56 @@ test('HTTP streaming falls back when thinking claims an available tool does not 
   }
 });
 
+test('HTTP streaming falls back when thinking prevalidation takes too long', async () => {
+  await useTempAgentProxyHome();
+  const previousTimeout = process.env.AGENTPROXY_THINKING_PREVALIDATE_TIMEOUT_MS;
+  process.env.AGENTPROXY_THINKING_PREVALIDATE_TIMEOUT_MS = '20';
+  const config = createDefaultConfig();
+  config.apiKey = 'test-key';
+  config.defaultModel = 'qwen/qwen3.8-max-preview';
+  const provider = new SlowThinkingProvider();
+  const registry = {
+    listModels: () => provider.listModels(),
+    resolve: (modelId: string) => ({ provider, model: modelId.replace(/^qwen\//, '') })
+  } as unknown as ProviderRegistry;
+  const server = createApiServer(config, registry, () => undefined);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+
+  try {
+    const started = performance.now();
+    const completion = await fetch(`http://127.0.0.1:${address.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer test-key', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen/qwen3.8-max-preview',
+        stream: true,
+        messages: [{ role: 'user', content: 'run pwd' }],
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'terminal',
+            parameters: { type: 'object', properties: { command: { type: 'string' } } }
+          }
+        }]
+      })
+    });
+    assert.equal(completion.status, 200);
+    const body = await completion.text();
+    assert.ok(performance.now() - started < 500);
+    assert.deepEqual(provider.modelsSeen, ['qwen3.8-max-preview', 'qwen3.7-max-no-thinking']);
+    assert.match(body, /qwen\/qwen3\.7-max-no-thinking/);
+    assert.match(body, /"name":"terminal"/);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.AGENTPROXY_THINKING_PREVALIDATE_TIMEOUT_MS;
+    else process.env.AGENTPROXY_THINKING_PREVALIDATE_TIMEOUT_MS = previousTimeout;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
+  }
+});
+
 let previousAgentProxyHome: string | undefined;
 let tempAgentProxyHome: string | null = null;
 
@@ -239,4 +306,19 @@ async function restoreAgentProxyHome(): Promise<void> {
   else process.env.AGENTPROXY_HOME = previousAgentProxyHome;
   if (tempAgentProxyHome) await rm(tempAgentProxyHome, { recursive: true, force: true });
   tempAgentProxyHome = null;
+}
+
+function waitForAbortOrDelay(signal: AbortSignal, ms: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }

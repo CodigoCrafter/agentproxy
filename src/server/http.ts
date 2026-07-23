@@ -15,6 +15,7 @@ import { StreamingToolParser } from '../tools/parser.js';
 import type { ChatCompletionRequest, ProviderStreamEvent, Usage } from '../types.js';
 
 const STABLE_QWEN_TOOL_FALLBACK = 'qwen/qwen3.7-max-no-thinking';
+const DEFAULT_THINKING_PREVALIDATION_TIMEOUT_MS = 45_000;
 
 export function createApiServer(
   config: AgentProxyConfig,
@@ -159,32 +160,72 @@ async function prepareProviderEvents(options: {
   config: AgentProxyConfig;
   signal: AbortSignal;
 }): Promise<{ modelId: string; events: AsyncIterable<ProviderStreamEvent> }> {
+  const prevalidate = shouldPrevalidateToolStream(options.provider.id, options.model, options.body);
+  const linkedAbort = prevalidate ? createLinkedAbortController(options.signal) : null;
   const events = options.provider.stream({
     model: options.model,
     prompt: options.prompt,
     sessionId: options.sessionId,
     thinking: !options.model.endsWith('-no-thinking'),
-    signal: options.signal,
+    signal: linkedAbort?.controller.signal || options.signal,
     idleTimeoutMs: options.provider.idleTimeoutMs
   });
 
-  if (!shouldPrevalidateToolStream(options.provider.id, options.model, options.body)) {
+  if (!prevalidate) {
     return { modelId: options.modelId, events };
   }
 
-  const collected = await collectProviderEvents(events);
-  validateToolStream(collected, options.body);
-  return { modelId: options.modelId, events: iterableFromArray(collected) };
+  const prevalidationAbort = linkedAbort;
+  if (!prevalidationAbort) throw new Error('Missing prevalidation abort controller.');
+
+  try {
+    const collected = await collectProviderEvents(
+      events,
+      thinkingPrevalidationTimeoutMs(),
+      prevalidationAbort.controller
+    );
+    validateToolStream(collected, options.body);
+    return { modelId: options.modelId, events: iterableFromArray(collected) };
+  } finally {
+    prevalidationAbort.cleanup();
+  }
 }
 
 function shouldPrevalidateToolStream(providerId: string, model: string, body: ChatCompletionRequest): boolean {
   return providerId === 'qwen' && Boolean(body.tools?.length) && !model.endsWith('-no-thinking');
 }
 
-async function collectProviderEvents(events: AsyncIterable<ProviderStreamEvent>): Promise<ProviderStreamEvent[]> {
+async function collectProviderEvents(
+  events: AsyncIterable<ProviderStreamEvent>,
+  timeoutMs: number,
+  controller: AbortController
+): Promise<ProviderStreamEvent[]> {
   const collected: ProviderStreamEvent[] = [];
-  for await (const event of events) collected.push(event);
-  return collected;
+  const timeoutError = Object.assign(
+    new Error(`Qwen thinking prevalidation exceeded ${timeoutMs}ms; retry with a no-thinking model.`),
+    { statusCode: 502 }
+  );
+  let timer: NodeJS.Timeout | undefined;
+  const collection = (async () => {
+    for await (const event of events) collected.push(event);
+    return collected;
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+    timer.unref();
+  });
+
+  try {
+    return await Promise.race([collection, timeout]);
+  } catch (error) {
+    collection.catch(() => undefined);
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function* iterableFromArray<T>(values: T[]): AsyncIterable<T> {
@@ -242,6 +283,22 @@ function looksLikeToolAvailabilityHallucination(text: string, body: ChatCompleti
   const unavailablePattern = /tool .{1,80}(?:does not exist|does not exists|not available|not found)|ferramenta .{1,80}(?:nao existe|indisponivel)|schema .{1,120}(?:only includes|so inclui)/i;
   if (!unavailablePattern.test(normalized)) return false;
   return (body.tools || []).some((tool) => normalized.includes(tool.function.name.toLowerCase()));
+}
+
+function thinkingPrevalidationTimeoutMs(): number {
+  const value = Number(process.env.AGENTPROXY_THINKING_PREVALIDATE_TIMEOUT_MS || '');
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_THINKING_PREVALIDATION_TIMEOUT_MS;
+}
+
+function createLinkedAbortController(signal: AbortSignal): { controller: AbortController; cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  if (signal.aborted) abort();
+  else signal.addEventListener('abort', abort, { once: true });
+  return {
+    controller,
+    cleanup: () => signal.removeEventListener('abort', abort)
+  };
 }
 
 async function primeStream<T>(events: AsyncIterable<T>): Promise<AsyncIterable<T>> {

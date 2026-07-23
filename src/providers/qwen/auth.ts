@@ -107,6 +107,7 @@ export class QwenBrowserAuth {
       this.sessions.delete(sessionId);
       await session.page.close().catch(() => undefined);
     }
+    this.sessionLocks.delete(sessionId);
   }
 
   async close(): Promise<void> {

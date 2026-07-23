@@ -14,6 +14,7 @@ class FakeProvider implements ProviderAdapter {
   readonly id = 'qwen';
   readonly idleTimeoutMs = 12_345;
   lastRequest: ProviderRequest | null = null;
+  readonly requests: ProviderRequest[] = [];
 
   async authStatus() { return { authenticated: true, detail: 'test' }; }
   async listModels() {
@@ -26,6 +27,7 @@ class FakeProvider implements ProviderAdapter {
   }
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
     this.lastRequest = request;
+    this.requests.push(request);
     yield { type: 'text', text: '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>' };
     yield { type: 'done' };
   }
@@ -124,6 +126,46 @@ test('HTTP API authenticates requests and emits OpenAI tool calls', async () => 
     assert.match(telemetry, /"type":"request_end"/);
     assert.match(telemetry, /"toolNames":\[\]/);
     assert.doesNotMatch(telemetry, /read it|do not forward this/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await restoreAgentProxyHome();
+  }
+});
+
+test('HTTP API gives each provider call an isolated request id even with the same Hermes session', async () => {
+  await useTempAgentProxyHome();
+  const config = createDefaultConfig();
+  config.apiKey = 'test-key';
+  const provider = new FakeProvider();
+  const registry = {
+    listModels: () => provider.listModels(),
+    resolve: () => ({ provider, model: 'model' })
+  } as unknown as ProviderRegistry;
+  const server = createApiServer(config, registry, () => undefined);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const endpoint = `http://127.0.0.1:${address.port}/v1/chat/completions`;
+
+  try {
+    await Promise.all([1, 2].map((index) => fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer test-key',
+        'content-type': 'application/json',
+        'x-agentproxy-session': 'shared-hermes-session'
+      },
+      body: JSON.stringify({
+        model: 'fake/model',
+        messages: [{ role: 'user', content: `hello ${index}` }]
+      })
+    })));
+
+    assert.equal(provider.requests.length, 2);
+    assert.equal(provider.requests[0].sessionId, 'shared-hermes-session');
+    assert.equal(provider.requests[1].sessionId, 'shared-hermes-session');
+    assert.notEqual(provider.requests[0].requestId, provider.requests[1].requestId);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await restoreAgentProxyHome();

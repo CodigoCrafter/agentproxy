@@ -16,6 +16,7 @@ export interface ModelInfo {
 export interface ProviderRequest {
   model: string;
   prompt: string;
+  requestId: string;
   sessionId: string;
   thinking: boolean;
   signal: AbortSignal;

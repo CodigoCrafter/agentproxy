@@ -62,7 +62,8 @@ export class QwenProvider implements ProviderAdapter {
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
     const model = request.model.replace(/-no-thinking$/, '');
-    const { session, release } = await this.auth.acquireSession(request.sessionId, model);
+    const upstreamSessionId = this.upstreamSessionId(request);
+    const { session, release } = await this.auth.acquireSession(upstreamSessionId, model);
     let shouldInvalidateSession = false;
     let streamError: unknown;
     try {
@@ -128,11 +129,13 @@ export class QwenProvider implements ProviderAdapter {
         request.signal.removeEventListener('abort', abort);
       }
     } finally {
-      if (shouldInvalidateSession) {
-        await this.auth.invalidateSession(request.sessionId);
-        if (this.needsRetryCooldown(streamError)) await delay(this.retryCooldownMs);
-      }
       release();
+      if (shouldInvalidateSession) {
+        await this.auth.invalidateSession(upstreamSessionId);
+        if (this.needsRetryCooldown(streamError)) await delay(this.retryCooldownMs);
+      } else {
+        await this.auth.invalidateSession(upstreamSessionId);
+      }
     }
   }
 
@@ -269,6 +272,10 @@ export class QwenProvider implements ProviderAdapter {
   private needsRetryCooldown(error: unknown): boolean {
     const message = (error as Error | undefined)?.message || '';
     return /timeout|chat is in progress|has been closed/i.test(message);
+  }
+
+  private upstreamSessionId(request: ProviderRequest): string {
+    return `${request.sessionId || '__default__'}:${request.requestId}`;
   }
 
   private requestHeaders(source: Record<string, string>, referer: string): Record<string, string> {

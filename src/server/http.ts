@@ -107,6 +107,7 @@ async function chatCompletion(
       model,
       modelId,
       prompt: prompt.prompt,
+      requestId,
       sessionId,
       body,
       config,
@@ -132,6 +133,7 @@ async function chatCompletion(
         model: fallback.model,
         modelId: fallbackModelId,
         prompt: prompt.prompt,
+        requestId,
         sessionId,
         body,
         config,
@@ -155,6 +157,7 @@ async function prepareProviderEvents(options: {
   model: string;
   modelId: string;
   prompt: string;
+  requestId: string;
   sessionId: string;
   body: ChatCompletionRequest;
   config: AgentProxyConfig;
@@ -165,6 +168,7 @@ async function prepareProviderEvents(options: {
   const events = options.provider.stream({
     model: options.model,
     prompt: options.prompt,
+    requestId: options.requestId,
     sessionId: options.sessionId,
     thinking: !options.model.endsWith('-no-thinking'),
     signal: linkedAbort?.controller.signal || options.signal,

@@ -36,6 +36,7 @@ test('Qwen request gate times out queued requests', async () => {
 
 test('detects Qwen rate limit errors', () => {
   assert.equal(isQwenRateLimitError(Object.assign(new Error('anything'), { statusCode: 429 })), true);
+  assert.equal(isQwenRateLimitError(Object.assign(new Error('translated throttle'), { statusCode: 400, upstreamStatusCode: 429 })), true);
   assert.equal(isQwenRateLimitError(new Error("Qwen upstream error: RateLimited: You've reached the upper limit for today's usage.")), true);
   assert.equal(isQwenRateLimitError(new Error('Qwen request timeout')), false);
 });

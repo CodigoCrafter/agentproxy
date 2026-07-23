@@ -21,6 +21,9 @@ interface QwenChunk {
   usage?: { input_tokens?: number; output_tokens?: number };
 }
 
+const NON_RETRYABLE_QWEN_THROTTLE_STATUS = 400;
+const QWEN_THROTTLE_MESSAGE = 'Qwen web temporarily throttled this automation session. Reduce parallel subagents or wait before retrying.';
+
 export class QwenProvider implements ProviderAdapter {
   readonly id = 'qwen';
   private readonly auth: QwenBrowserAuth;
@@ -279,7 +282,13 @@ export class QwenProvider implements ProviderAdapter {
   private upstreamError(value: { data?: { code?: string; details?: string }; message?: string }): Error {
     const code = value.data?.code || 'Unknown';
     const detail = value.data?.details || value.message || 'request failed';
-    const statusCode = code === 'Bad_Request' ? 400 : code === 'RateLimited' ? 429 : 502;
+    if (code === 'RateLimited') {
+      return Object.assign(
+        new Error(`${QWEN_THROTTLE_MESSAGE} Upstream code: ${code}.`),
+        { statusCode: NON_RETRYABLE_QWEN_THROTTLE_STATUS, upstreamStatusCode: 429, upstreamDetail: detail }
+      );
+    }
+    const statusCode = code === 'Bad_Request' ? 400 : 502;
     return Object.assign(new Error(`Qwen upstream error: ${code}: ${detail}`), { statusCode });
   }
 
@@ -296,15 +305,15 @@ export class QwenProvider implements ProviderAdapter {
     const remainingMs = this.rateLimitedUntil - Date.now();
     if (remainingMs <= 0) return;
     throw Object.assign(
-      new Error(`${this.rateLimitMessage || 'Qwen is temporarily rate limited.'} Retry after about ${Math.ceil(remainingMs / 60_000)} minute(s).`),
-      { statusCode: 429 }
+      new Error(`${this.rateLimitMessage || QWEN_THROTTLE_MESSAGE} Retry after about ${Math.ceil(remainingMs / 60_000)} minute(s).`),
+      { statusCode: NON_RETRYABLE_QWEN_THROTTLE_STATUS, upstreamStatusCode: 429 }
     );
   }
 
   private openRateLimitCircuit(error: unknown): void {
     const cooldownMs = Math.max(1_000, this.config.providers.qwen.rateLimitCooldownMs);
     this.rateLimitedUntil = Math.max(this.rateLimitedUntil, Date.now() + cooldownMs);
-    this.rateLimitMessage = (error as Error | undefined)?.message || 'Qwen upstream rate limit reached.';
+    this.rateLimitMessage = QWEN_THROTTLE_MESSAGE;
   }
 
   private requestHeaders(source: Record<string, string>, referer: string): Record<string, string> {
@@ -398,8 +407,9 @@ interface QwenQueueEntry {
 
 export function isQwenRateLimitError(error: unknown): boolean {
   const statusCode = (error as { statusCode?: number } | undefined)?.statusCode;
+  const upstreamStatusCode = (error as { upstreamStatusCode?: number } | undefined)?.upstreamStatusCode;
   const message = (error as Error | undefined)?.message || '';
-  return statusCode === 429 || /RateLimited|upper limit|rate limit/i.test(message);
+  return statusCode === 429 || upstreamStatusCode === 429 || /RateLimited|upper limit|rate limit/i.test(message);
 }
 
 export function reconcileQwenContent(previous: string, current: string): string {

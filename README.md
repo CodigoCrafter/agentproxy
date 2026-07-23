@@ -176,7 +176,7 @@ proxy hermes
 
 Se aparecer `Provider enabled but not implemented`, algum provider experimental esta habilitado na configuracao, mas ainda nao tem adaptador estavel no codigo publicado. No estado atual do projeto, mantenha somente o Qwen habilitado em `~/.agentproxy/config.json`.
 
-Se aparecer `Qwen upstream error: RateLimited: You've reached the upper limit for today's usage`, o limite veio do proprio Qwen web. O AgentProxy nao consegue remover esse bloqueio, mas evita continuar martelando a conta: novas chamadas falham rapido durante o cooldown configurado em `providers.qwen.rateLimitCooldownMs`. Para tarefas com muitos subagentes, reduza o fan-out ou aguarde o reset do limite do Qwen.
+Se aparecer uma mensagem de throttle/rate limit do Qwen web, o bloqueio veio do endpoint interno usado pela sessao autenticada. Isso pode acontecer por excesso de paralelismo, modelo preview saturado, contexto grande ou heuristica anti-abuso da propria interface web; nao significa necessariamente que o chat manual do Qwen deixou de ser gratuito. O AgentProxy nao consegue remover esse bloqueio no upstream, mas evita continuar martelando a sessao: novas chamadas falham rapido durante o cooldown configurado em `providers.qwen.rateLimitCooldownMs`. Para tarefas com muitos subagentes, reduza o fan-out ou aguarde antes de tentar novamente.
 
 Por padrao, o Qwen usa no maximo 2 requisicoes upstream simultaneas (`providers.qwen.maxConcurrentRequests`). Isso nao volta a compartilhar o mesmo chat entre subagentes; cada requisicao continua usando um `chat_id` isolado. O limite serve apenas para proteger a sessao web contra bloqueio por excesso de uso.
 

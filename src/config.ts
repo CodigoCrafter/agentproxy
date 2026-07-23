@@ -22,6 +22,13 @@ export interface BrowserProviderConfig extends ProviderConfig {
   maxConcurrentRequests: number;
   queueTimeoutMs: number;
   rateLimitCooldownMs: number;
+  accounts: QwenAccountConfig[];
+}
+
+export interface QwenAccountConfig {
+  id: string;
+  enabled: boolean;
+  label?: string;
 }
 
 export interface AgentProxyConfig {
@@ -79,8 +86,18 @@ export function getPaths() {
     telemetry: path.join(home, 'logs', 'telemetry.jsonl'),
     providers,
     providerHome: (providerId: ProviderId) => path.join(providers, providerId),
-    qwenProfile: path.join(providers, 'qwen', 'browser-profile')
+    qwenProfile: path.join(providers, 'qwen', 'browser-profile'),
+    qwenProfileFor: (accountId: string) => path.join(providers, 'qwen', qwenProfileDir(accountId))
   };
+}
+
+export function qwenProfileDir(accountId: string): string {
+  return accountId === 'main' ? 'browser-profile' : `browser-profile-${safeQwenAccountId(accountId)}`;
+}
+
+export function safeQwenAccountId(accountId: string): string {
+  const safe = accountId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return safe || 'main';
 }
 
 export function createDefaultConfig(): AgentProxyConfig {
@@ -110,7 +127,14 @@ export function createDefaultConfig(): AgentProxyConfig {
         idleTimeoutMs: 75_000,
         maxConcurrentRequests: 2,
         queueTimeoutMs: 120_000,
-        rateLimitCooldownMs: 30 * 60_000
+        rateLimitCooldownMs: 6 * 60 * 60_000,
+        accounts: [
+          { id: 'main', enabled: true, label: 'Qwen main' },
+          { id: 'qwen2', enabled: true, label: 'Qwen backup 2' },
+          { id: 'qwen3', enabled: true, label: 'Qwen backup 3' },
+          { id: 'qwen4', enabled: true, label: 'Qwen backup 4' },
+          { id: 'qwen5', enabled: true, label: 'Qwen backup 5' }
+        ]
       },
       kimi: {
         enabled: false,
@@ -189,7 +213,7 @@ export function mergeConfig(base: AgentProxyConfig, value: PartialAgentProxyConf
     providers: {
       ...base.providers,
       ...value.providers,
-      qwen: { ...base.providers.qwen, ...value.providers?.qwen },
+      qwen: mergeQwenConfig(base.providers.qwen, value.providers?.qwen),
       kimi: { ...base.providers.kimi, ...value.providers?.kimi },
       chatgpt: { ...base.providers.chatgpt, ...value.providers?.chatgpt },
       gemini: { ...base.providers.gemini, ...value.providers?.gemini }
@@ -200,6 +224,28 @@ export function mergeConfig(base: AgentProxyConfig, value: PartialAgentProxyConf
       hermes: { ...base.integrations.hermes, ...value.integrations?.hermes }
     }
   };
+}
+
+function mergeQwenConfig(
+  base: BrowserProviderConfig,
+  value: Partial<BrowserProviderConfig> | undefined
+): BrowserProviderConfig {
+  const merged = { ...base, ...value };
+  merged.accounts = normalizeQwenAccounts(value?.accounts || base.accounts);
+  return merged;
+}
+
+function normalizeQwenAccounts(accounts: QwenAccountConfig[]): QwenAccountConfig[] {
+  const seen = new Set<string>();
+  const normalized: QwenAccountConfig[] = [];
+  for (const account of accounts) {
+    const id = safeQwenAccountId(account.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    normalized.push({ ...account, id, enabled: account.enabled !== false });
+  }
+  if (!seen.has('main')) normalized.unshift({ id: 'main', enabled: true, label: 'Qwen main' });
+  return normalized;
 }
 
 export async function saveConfig(config: AgentProxyConfig): Promise<void> {

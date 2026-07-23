@@ -30,6 +30,7 @@ export interface AuthStatus {
 
 export interface AuthenticationOptions {
   force?: boolean;
+  accountId?: string;
 }
 
 export interface ProviderAdapter {

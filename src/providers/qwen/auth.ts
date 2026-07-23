@@ -39,7 +39,10 @@ export class QwenBrowserAuth {
   private readonly sessionLocks = new Map<string, Mutex>();
   private cleanupTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly config: AgentProxyConfig) {}
+  constructor(
+    private readonly config: AgentProxyConfig,
+    private readonly accountId = 'main'
+  ) {}
 
   async authenticate(force = false): Promise<void> {
     await this.close();
@@ -47,12 +50,12 @@ export class QwenBrowserAuth {
     if (force) await context.clearCookies();
     const page = context.pages()[0] || await context.newPage();
     await page.goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-    process.stdout.write('\nConclua o login na janela do Qwen. A verificacao e automatica.\n');
+    process.stdout.write(`\nConclua o login na janela do Qwen para a conta "${this.accountId}". A verificacao e automatica.\n`);
 
     const deadline = Date.now() + 10 * 60 * 1000;
     while (Date.now() < deadline) {
       if (await this.hasSession(context, page)) {
-        process.stdout.write('Sessao do navegador Qwen confirmada.\n');
+        process.stdout.write(`Sessao do navegador Qwen confirmada para "${this.accountId}".\n`);
         await context.close();
         this.context = null;
         return;
@@ -72,7 +75,7 @@ export class QwenBrowserAuth {
       const authenticated = this.hasAuthCookie(cookies.map((cookie) => cookie.name));
       return {
         authenticated,
-        detail: authenticated ? 'Sessao do navegador encontrada' : 'Execute: proxy setup'
+        detail: authenticated ? `Sessao do navegador encontrada (${this.accountId})` : `Execute: proxy login qwen ${this.accountId}`
       };
     } catch (error) {
       return { authenticated: false, detail: (error as Error).message };
@@ -136,7 +139,7 @@ export class QwenBrowserAuth {
     else if (choice === 'chrome') channel = 'chrome';
     else if (choice === 'edge') channel = 'msedge';
 
-    const context = await browser.launchPersistentContext(getPaths().qwenProfile, {
+    const context = await browser.launchPersistentContext(getPaths().qwenProfileFor(this.accountId), {
       headless,
       channel,
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',

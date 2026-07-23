@@ -13,6 +13,7 @@ import {
   providerIds,
   readRuntime,
   removeRuntime,
+  safeQwenAccountId,
   saveConfig,
   type AgentProxyConfig,
   type RuntimeState
@@ -28,6 +29,7 @@ async function main(): Promise<void> {
   switch (command) {
     case 'setup': await setup(); break;
     case 'login': await login(args[0]); break;
+    case 'qwen': await qwenCommand(args); break;
     case 'hermes': await hermesQuickstart(); break;
     case 'on': await on(args.includes('--foreground')); break;
     case 'off': await off(); break;
@@ -152,10 +154,27 @@ async function login(providerId: string | undefined): Promise<void> {
     if (!provider?.authenticate) throw new Error(`Adaptador ${providerId} indisponivel.`);
     await saveConfig(config);
     process.stdout.write(`Abrindo uma nova sessao do ${providerId}...\n`);
-    await provider.authenticate({ force: true });
+    const accountId = providerId === 'qwen' ? safeQwenAccountId(args[1] || 'main') : undefined;
+    await provider.authenticate({ force: true, accountId });
   } finally {
     await registry.close();
   }
+}
+
+async function qwenCommand(commandArgs: string[]): Promise<void> {
+  const subcommand = commandArgs[0] || 'accounts';
+  if (subcommand !== 'accounts') throw new Error('Comando Qwen disponivel: proxy qwen accounts');
+  const config = await loadConfig();
+  process.stdout.write('\nContas Qwen configuradas\n\n');
+  for (const account of config.providers.qwen.accounts) {
+    process.stdout.write(`${account.enabled === false ? '[off]' : '[on] '} ${account.id}${account.label ? ` - ${account.label}` : ''}\n`);
+  }
+  process.stdout.write('\nLogin de cada conta:\n');
+  process.stdout.write('  proxy login qwen main\n');
+  process.stdout.write('  proxy login qwen qwen2\n');
+  process.stdout.write('  proxy login qwen qwen3\n');
+  process.stdout.write('  proxy login qwen qwen4\n');
+  process.stdout.write('  proxy login qwen qwen5\n');
 }
 
 async function on(foreground: boolean): Promise<void> {
@@ -322,6 +341,8 @@ AgentProxy 0.1.0
 Uso:
   proxy setup              Configura provedores e login
   proxy login <provedor>   Limpa a sessao e abre um novo login
+  proxy login qwen <conta> Loga uma conta Qwen especifica: main, qwen2...qwen5
+  proxy qwen accounts      Lista os slots de contas Qwen
   proxy hermes             Configura Qwen, inicia e conecta o Hermes
   proxy on                 Inicia em segundo plano
   proxy on --foreground    Inicia mostrando os logs

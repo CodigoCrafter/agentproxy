@@ -26,16 +26,22 @@ const QWEN_THROTTLE_MESSAGE = 'Qwen web temporarily throttled this automation se
 
 export class QwenProvider implements ProviderAdapter {
   readonly id = 'qwen';
-  private readonly auth: QwenBrowserAuth;
-  private readonly requestGate: QwenRequestGate;
+  private readonly accounts: QwenAccountState[];
   private modelCache: { expiresAt: number; models: ModelInfo[] } | null = null;
   private readonly retryCooldownMs = 2_000;
-  private rateLimitedUntil = 0;
-  private rateLimitMessage = '';
 
   constructor(private readonly config: AgentProxyConfig) {
-    this.auth = new QwenBrowserAuth(config);
-    this.requestGate = new QwenRequestGate(config.providers.qwen.maxConcurrentRequests);
+    this.accounts = this.configuredAccounts().map((account) => ({
+      id: account.id,
+      label: account.label || account.id,
+      auth: new QwenBrowserAuth(config, account.id),
+      requestGate: new QwenRequestGate(config.providers.qwen.maxConcurrentRequests),
+      rateLimitedUntil: 0,
+      rateLimitMessage: '',
+      authUnavailableUntil: 0,
+      lastUsedAt: 0,
+      successCount: 0
+    }));
   }
 
   get idleTimeoutMs(): number {
@@ -43,16 +49,31 @@ export class QwenProvider implements ProviderAdapter {
   }
 
   authenticate(options?: AuthenticationOptions): Promise<void> {
-    return this.auth.authenticate(options?.force);
+    return this.accountForLogin(options?.accountId).auth.authenticate(options?.force);
   }
 
-  authStatus(): Promise<AuthStatus> {
-    return this.auth.status();
+  async authStatus(): Promise<AuthStatus> {
+    const statuses = await Promise.all(this.accounts.map(async (account) => ({
+      account,
+      status: await account.auth.status()
+    })));
+    const authenticated = statuses.filter((entry) => entry.status.authenticated);
+    if (authenticated.length > 0) {
+      return {
+        authenticated: true,
+        detail: authenticated.map((entry) => `${entry.account.id}: ok`).join(', ')
+      };
+    }
+    return {
+      authenticated: false,
+      detail: `Nenhuma conta Qwen logada. Execute: proxy login qwen ${this.accounts[0]?.id || 'main'}`
+    };
   }
 
   async listModels(): Promise<ModelInfo[]> {
     if (this.modelCache && this.modelCache.expiresAt > Date.now()) return this.modelCache.models;
-    const headers = await this.auth.getBasicHeaders();
+    const account = await this.firstAuthenticatedAccount();
+    const headers = await account.auth.getBasicHeaders();
     const response = await fetch('https://chat.qwen.ai/api/models', {
       headers: this.requestHeaders(headers, 'https://chat.qwen.ai/')
     });
@@ -68,17 +89,54 @@ export class QwenProvider implements ProviderAdapter {
   }
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderStreamEvent> {
-    this.assertNotRateLimited();
-    const releaseRequestSlot = await this.requestGate.acquire(request.signal, this.config.providers.qwen.queueTimeoutMs);
     const model = request.model.replace(/-no-thinking$/, '');
-    const upstreamSessionId = this.upstreamSessionId(request);
+    const attempted = new Set<string>();
+    const errors: Error[] = [];
+
+    while (attempted.size < this.accounts.length) {
+      const account = this.selectAccount(attempted);
+      attempted.add(account.id);
+      try {
+        yield* this.streamWithAccount(account, request, model);
+        return;
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        errors.push(normalized);
+        if (isQwenRateLimitError(error)) {
+          this.openRateLimitCircuit(account, error);
+          continue;
+        }
+        if (this.isAuthUnavailableError(error)) {
+          this.markAuthUnavailable(account, error);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw this.noAvailableAccountError(errors);
+  }
+
+  close(): Promise<void> {
+    return Promise.allSettled(this.accounts.map((account) => account.auth.close())).then(() => undefined);
+  }
+
+  private async *streamWithAccount(
+    account: QwenAccountState,
+    request: ProviderRequest,
+    model: string
+  ): AsyncIterable<ProviderStreamEvent> {
+    this.assertAccountAvailable(account);
+    const releaseRequestSlot = await account.requestGate.acquire(request.signal, this.config.providers.qwen.queueTimeoutMs);
+    const upstreamSessionId = this.upstreamSessionId(account, request);
     let releaseSession: (() => void) | undefined;
     let shouldInvalidateSession = false;
     let streamError: unknown;
     try {
-      this.assertNotRateLimited();
-      const { session, release } = await this.auth.acquireSession(upstreamSessionId, model);
+      this.assertAccountAvailable(account);
+      const { session, release } = await account.auth.acquireSession(upstreamSessionId, model);
       releaseSession = release;
+      account.lastUsedAt = Date.now();
       const timestamp = Math.floor(Date.now() / 1000);
       const payload = {
         stream: true,
@@ -132,32 +190,27 @@ export class QwenProvider implements ProviderAdapter {
           throw new Error(`Qwen request failed: HTTP ${response.status} ${detail.slice(0, 500)}`);
         }
         yield* this.readQwenStream(response.body, request.idleTimeoutMs, controller);
+        account.successCount++;
       } catch (error) {
         shouldInvalidateSession = true;
         streamError = error;
-        if (isQwenRateLimitError(error)) this.openRateLimitCircuit(error);
         throw error;
       } finally {
         clearTimeout(totalTimer);
         request.signal.removeEventListener('abort', abort);
       }
     } catch (error) {
-      if (isQwenRateLimitError(error)) this.openRateLimitCircuit(error);
       throw error;
     } finally {
       releaseSession?.();
       if (shouldInvalidateSession) {
-        await this.auth.invalidateSession(upstreamSessionId);
+        await account.auth.invalidateSession(upstreamSessionId);
         if (this.needsRetryCooldown(streamError)) await delay(this.retryCooldownMs);
       } else {
-        await this.auth.invalidateSession(upstreamSessionId);
+        await account.auth.invalidateSession(upstreamSessionId);
       }
       releaseRequestSlot();
     }
-  }
-
-  close(): Promise<void> {
-    return this.auth.close();
   }
 
   private async *readQwenStream(
@@ -297,23 +350,76 @@ export class QwenProvider implements ProviderAdapter {
     return /timeout|chat is in progress|has been closed/i.test(message);
   }
 
-  private upstreamSessionId(request: ProviderRequest): string {
-    return `${request.sessionId || '__default__'}:${request.requestId}`;
+  private upstreamSessionId(account: QwenAccountState, request: ProviderRequest): string {
+    return `${account.id}:${request.sessionId || '__default__'}:${request.requestId}`;
   }
 
-  private assertNotRateLimited(): void {
-    const remainingMs = this.rateLimitedUntil - Date.now();
+  private assertAccountAvailable(account: QwenAccountState): void {
+    const remainingMs = Math.max(account.rateLimitedUntil, account.authUnavailableUntil) - Date.now();
     if (remainingMs <= 0) return;
     throw Object.assign(
-      new Error(`${this.rateLimitMessage || QWEN_THROTTLE_MESSAGE} Retry after about ${Math.ceil(remainingMs / 60_000)} minute(s).`),
+      new Error(`${account.rateLimitMessage || `Qwen account "${account.id}" is temporarily unavailable.`} Retry after about ${Math.ceil(remainingMs / 60_000)} minute(s).`),
       { statusCode: NON_RETRYABLE_QWEN_THROTTLE_STATUS, upstreamStatusCode: 429 }
     );
   }
 
-  private openRateLimitCircuit(error: unknown): void {
+  private openRateLimitCircuit(account: QwenAccountState, _error: unknown): void {
     const cooldownMs = Math.max(1_000, this.config.providers.qwen.rateLimitCooldownMs);
-    this.rateLimitedUntil = Math.max(this.rateLimitedUntil, Date.now() + cooldownMs);
-    this.rateLimitMessage = QWEN_THROTTLE_MESSAGE;
+    account.rateLimitedUntil = Math.max(account.rateLimitedUntil, Date.now() + cooldownMs);
+    account.rateLimitMessage = `${QWEN_THROTTLE_MESSAGE} Account "${account.id}" is in cooldown.`;
+  }
+
+  private markAuthUnavailable(account: QwenAccountState, error: unknown): void {
+    account.authUnavailableUntil = Date.now() + 60_000;
+    account.rateLimitMessage = (error as Error | undefined)?.message || `Qwen account "${account.id}" is unavailable.`;
+  }
+
+  private isAuthUnavailableError(error: unknown): boolean {
+    const message = (error as Error | undefined)?.message || '';
+    return /sessao do qwen expirada|execute: proxy login qwen|login|auth/i.test(message);
+  }
+
+  private selectAccount(attempted: Set<string>): QwenAccountState {
+    const now = Date.now();
+    const available = this.accounts
+      .filter((account) => !attempted.has(account.id))
+      .filter((account) => account.rateLimitedUntil <= now && account.authUnavailableUntil <= now)
+      .sort((a, b) => b.successCount - a.successCount || a.requestGate.activeCount - b.requestGate.activeCount || a.lastUsedAt - b.lastUsedAt);
+    if (available[0]) return available[0];
+
+    const remaining = this.accounts.filter((account) => !attempted.has(account.id));
+    if (remaining[0]) {
+      return remaining.sort((a, b) => Math.max(a.rateLimitedUntil, a.authUnavailableUntil) - Math.max(b.rateLimitedUntil, b.authUnavailableUntil))[0];
+    }
+    throw new Error('No Qwen accounts configured.');
+  }
+
+  private noAvailableAccountError(errors: Error[]): Error {
+    const nextAt = Math.min(...this.accounts.map((account) => Math.max(account.rateLimitedUntil, account.authUnavailableUntil)).filter((value) => value > Date.now()));
+    const wait = Number.isFinite(nextAt) ? ` Retry after about ${Math.max(1, Math.ceil((nextAt - Date.now()) / 60_000))} minute(s).` : '';
+    const details = errors.map((error) => error.message).filter(Boolean).slice(-3).join(' | ');
+    return Object.assign(
+      new Error(`No Qwen account is currently available.${wait}${details ? ` Last errors: ${details}` : ''}`),
+      { statusCode: NON_RETRYABLE_QWEN_THROTTLE_STATUS, upstreamStatusCode: 429 }
+    );
+  }
+
+  private configuredAccounts() {
+    return this.config.providers.qwen.accounts.filter((account) => account.enabled !== false);
+  }
+
+  private accountForLogin(accountId = 'main'): QwenAccountState {
+    const account = this.accounts.find((entry) => entry.id === accountId);
+    if (!account) throw new Error(`Conta Qwen nao configurada: ${accountId}`);
+    return account;
+  }
+
+  private async firstAuthenticatedAccount(): Promise<QwenAccountState> {
+    for (const account of this.accounts) {
+      const status = await account.auth.status();
+      if (status.authenticated) return account;
+    }
+    throw new Error(`Nenhuma conta Qwen logada. Execute: proxy login qwen ${this.accounts[0]?.id || 'main'}`);
   }
 
   private requestHeaders(source: Record<string, string>, referer: string): Record<string, string> {
@@ -346,11 +452,27 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface QwenAccountState {
+  id: string;
+  label: string;
+  auth: QwenBrowserAuth;
+  requestGate: QwenRequestGate;
+  rateLimitedUntil: number;
+  rateLimitMessage: string;
+  authUnavailableUntil: number;
+  lastUsedAt: number;
+  successCount: number;
+}
+
 export class QwenRequestGate {
   private active = 0;
   private readonly queue: QwenQueueEntry[] = [];
 
   constructor(private readonly maxConcurrentRequests: number) {}
+
+  get activeCount(): number {
+    return this.active;
+  }
 
   acquire(signal: AbortSignal, timeoutMs: number): Promise<() => void> {
     if (signal.aborted) return Promise.reject(signal.reason);

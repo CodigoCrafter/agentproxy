@@ -100,6 +100,24 @@ export function safeQwenAccountId(accountId: string): string {
   return safe || 'main';
 }
 
+export function ensureQwenAccount(config: AgentProxyConfig, accountId: string): QwenAccountConfig {
+  const id = safeQwenAccountId(accountId);
+  const existing = config.providers.qwen.accounts.find((account) => safeQwenAccountId(account.id) === id);
+  if (existing) {
+    existing.id = id;
+    existing.enabled = existing.enabled !== false;
+    return existing;
+  }
+
+  const account: QwenAccountConfig = {
+    id,
+    enabled: true,
+    label: id === 'main' ? 'Qwen main' : `Qwen ${id}`
+  };
+  config.providers.qwen.accounts.push(account);
+  return account;
+}
+
 export function createDefaultConfig(): AgentProxyConfig {
   return {
     version: 1,

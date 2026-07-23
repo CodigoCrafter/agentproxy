@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyHermesProfile, createDefaultConfig, mergeConfig, providerIds } from './config.js';
+import { applyHermesProfile, createDefaultConfig, ensureQwenAccount, mergeConfig, providerIds } from './config.js';
 
 test('Hermes profile clamps legacy context settings and extends upstream timeouts', () => {
   const config = createDefaultConfig();
@@ -57,4 +57,38 @@ test('legacy Qwen-only configuration receives multi-provider defaults', () => {
   assert.equal(config.providers.kimi.enabled, false);
   assert.equal(config.providers.chatgpt.enabled, false);
   assert.equal(config.providers.gemini.enabled, false);
+});
+
+test('Qwen accounts can be added dynamically with safe ids', () => {
+  const config = createDefaultConfig();
+
+  const account = ensureQwenAccount(config, ' Trabalho Principal ');
+  const duplicate = ensureQwenAccount(config, 'trabalho-principal');
+
+  assert.equal(account.id, 'trabalho-principal');
+  assert.equal(account.enabled, true);
+  assert.equal(duplicate, account);
+  assert.ok(config.providers.qwen.accounts.some((item) => item.id === 'trabalho-principal'));
+  assert.equal(
+    config.providers.qwen.accounts.filter((item) => item.id === 'trabalho-principal').length,
+    1
+  );
+});
+
+test('Qwen account normalization keeps arbitrary configured accounts', () => {
+  const config = mergeConfig(createDefaultConfig(), {
+    providers: {
+      qwen: {
+        accounts: [
+          { id: 'MAIN', enabled: true },
+          { id: 'cliente alpha', enabled: true },
+          { id: 'cliente-alpha', enabled: false },
+          { id: 'conta_10', enabled: true }
+        ]
+      }
+    }
+  });
+
+  assert.deepEqual(config.providers.qwen.accounts.map((account) => account.id), ['main', 'cliente-alpha', 'conta_10']);
+  assert.equal(config.providers.qwen.accounts.find((account) => account.id === 'cliente-alpha')?.enabled, true);
 });

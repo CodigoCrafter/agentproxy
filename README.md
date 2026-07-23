@@ -47,7 +47,7 @@ proxy login qwen
 proxy hermes
 ```
 
-Para usar o pool com ate 5 sessoes Qwen, faca login em cada slot desejado. Cada slot usa um perfil de navegador separado:
+Para usar o pool com multiplas sessoes Qwen, faca login em cada conta desejada. Cada nome usa um perfil de navegador separado, e voce pode criar quantas contas quiser:
 
 ```bash
 proxy login qwen main
@@ -55,8 +55,13 @@ proxy login qwen qwen2
 proxy login qwen qwen3
 proxy login qwen qwen4
 proxy login qwen qwen5
+proxy login qwen trabalho
+proxy login qwen conta10
+proxy login qwen cliente-x
 proxy qwen accounts
 ```
+
+O nome depois de `proxy login qwen` e livre. O AgentProxy normaliza o ID, salva a conta na configuracao e inclui essa sessao no pool automaticamente.
 
 Depois disso, o uso diario fica:
 
@@ -113,7 +118,7 @@ proxy status
 proxy off
 ```
 
-Para logar o pool com ate 5 sessoes Qwen no Windows:
+Para logar o pool com multiplas sessoes Qwen no Windows:
 
 ```powershell
 proxy login qwen main
@@ -121,8 +126,13 @@ proxy login qwen qwen2
 proxy login qwen qwen3
 proxy login qwen qwen4
 proxy login qwen qwen5
+proxy login qwen trabalho
+proxy login qwen conta10
+proxy login qwen cliente-x
 proxy qwen accounts
 ```
+
+Voce pode repetir esse comando com qualquer outro nome. Cada conta ganha um perfil persistente proprio dentro de `C:\Users\<seu-usuario>\.agentproxy\providers\qwen`.
 
 No Windows, configuracao, logs, cookies e perfis de navegador ficam em:
 
@@ -214,6 +224,7 @@ O arquivo `~/.agentproxy/config.json` controla:
 - Tamanho maximo de resultados de ferramentas.
 - Exposicao ou ocultacao de reasoning.
 - Navegador, timeouts, concorrencia, cooldown de rate limit e ativacao do Qwen.
+- Lista dinamica de contas Qwen em `providers.qwen.accounts`; `proxy login qwen <nome>` cria novos slots automaticamente.
 
 Credenciais, cookies e perfis de navegador ficam fora do repositorio em `~/.agentproxy/`.
 

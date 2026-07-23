@@ -7,6 +7,7 @@ import path from 'node:path';
 import process from 'node:process';
 import {
   applyHermesProfile,
+  ensureQwenAccount,
   getPaths,
   isProviderId,
   loadConfig,
@@ -148,13 +149,14 @@ async function login(providerId: string | undefined): Promise<void> {
   }
   const config = await loadConfig();
   config.providers[providerId].enabled = true;
+  const accountId = providerId === 'qwen' ? safeQwenAccountId(args[1] || 'main') : undefined;
+  if (providerId === 'qwen') ensureQwenAccount(config, accountId || 'main');
   const registry = new ProviderRegistry(config);
   try {
     const provider = registry.get(providerId);
     if (!provider?.authenticate) throw new Error(`Adaptador ${providerId} indisponivel.`);
     await saveConfig(config);
-    process.stdout.write(`Abrindo uma nova sessao do ${providerId}...\n`);
-    const accountId = providerId === 'qwen' ? safeQwenAccountId(args[1] || 'main') : undefined;
+    process.stdout.write(`Abrindo uma nova sessao do ${providerId}${accountId ? ` (${accountId})` : ''}...\n`);
     await provider.authenticate({ force: true, accountId });
   } finally {
     await registry.close();
@@ -169,12 +171,17 @@ async function qwenCommand(commandArgs: string[]): Promise<void> {
   for (const account of config.providers.qwen.accounts) {
     process.stdout.write(`${account.enabled === false ? '[off]' : '[on] '} ${account.id}${account.label ? ` - ${account.label}` : ''}\n`);
   }
-  process.stdout.write('\nLogin de cada conta:\n');
+  process.stdout.write('\nLogin de contas existentes:\n');
+  for (const account of config.providers.qwen.accounts) {
+    process.stdout.write(`  proxy login qwen ${account.id}\n`);
+  }
+  process.stdout.write('\nPara adicionar outra conta, escolha qualquer nome novo:\n');
+  process.stdout.write('  proxy login qwen trabalho\n');
+  process.stdout.write('  proxy login qwen conta10\n');
+  process.stdout.write('  proxy login qwen cliente-x\n');
+  process.stdout.write('\nAtalhos iniciais:\n');
   process.stdout.write('  proxy login qwen main\n');
   process.stdout.write('  proxy login qwen qwen2\n');
-  process.stdout.write('  proxy login qwen qwen3\n');
-  process.stdout.write('  proxy login qwen qwen4\n');
-  process.stdout.write('  proxy login qwen qwen5\n');
 }
 
 async function on(foreground: boolean): Promise<void> {
@@ -341,7 +348,7 @@ AgentProxy 0.1.0
 Uso:
   proxy setup              Configura provedores e login
   proxy login <provedor>   Limpa a sessao e abre um novo login
-  proxy login qwen <conta> Loga uma conta Qwen especifica: main, qwen2...qwen5
+  proxy login qwen <conta> Loga/cria uma conta Qwen: main, qwen2, trabalho...
   proxy qwen accounts      Lista os slots de contas Qwen
   proxy hermes             Configura Qwen, inicia e conecta o Hermes
   proxy on                 Inicia em segundo plano

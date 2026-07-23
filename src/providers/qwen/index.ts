@@ -127,6 +127,12 @@ export class QwenProvider implements ProviderAdapter {
     model: string
   ): AsyncIterable<ProviderStreamEvent> {
     this.assertAccountAvailable(account);
+    if (!account.requestGate.hasCapacity) {
+      throw Object.assign(
+        new Error(`Qwen account "${account.id}" is busy (${account.requestGate.activeCount}/${this.config.providers.qwen.maxConcurrentRequests} active requests). Try again after a current request finishes or log another Qwen account.`),
+        { statusCode: NON_RETRYABLE_QWEN_THROTTLE_STATUS }
+      );
+    }
     const releaseRequestSlot = await account.requestGate.acquire(request.signal, this.config.providers.qwen.queueTimeoutMs);
     const upstreamSessionId = this.upstreamSessionId(account, request);
     let releaseSession: (() => void) | undefined;
@@ -384,7 +390,8 @@ export class QwenProvider implements ProviderAdapter {
     const available = this.accounts
       .filter((account) => !attempted.has(account.id))
       .filter((account) => account.rateLimitedUntil <= now && account.authUnavailableUntil <= now)
-      .sort((a, b) => b.successCount - a.successCount || a.requestGate.activeCount - b.requestGate.activeCount || a.lastUsedAt - b.lastUsedAt);
+      .filter((account) => account.requestGate.hasCapacity)
+      .sort((a, b) => a.requestGate.activeCount - b.requestGate.activeCount || b.successCount - a.successCount || a.lastUsedAt - b.lastUsedAt);
     if (available[0]) return available[0];
 
     const remaining = this.accounts.filter((account) => !attempted.has(account.id));
@@ -472,6 +479,10 @@ export class QwenRequestGate {
 
   get activeCount(): number {
     return this.active;
+  }
+
+  get hasCapacity(): boolean {
+    return this.maxConcurrentRequests <= 0 || this.active < this.maxConcurrentRequests;
   }
 
   acquire(signal: AbortSignal, timeoutMs: number): Promise<() => void> {

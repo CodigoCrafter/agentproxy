@@ -126,7 +126,7 @@ export function createDefaultConfig(): AgentProxyConfig {
         requestTimeoutMs: 180_000,
         idleTimeoutMs: 75_000,
         maxConcurrentRequests: 2,
-        queueTimeoutMs: 120_000,
+        queueTimeoutMs: 10_000,
         rateLimitCooldownMs: 6 * 60 * 60_000,
         accounts: [
           { id: 'main', enabled: true, label: 'Qwen main' },

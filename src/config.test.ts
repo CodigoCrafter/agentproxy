@@ -24,7 +24,7 @@ test('Hermes profile clamps legacy context settings and extends upstream timeout
   assert.equal(config.providers.qwen.requestTimeoutMs, 180_000);
   assert.equal(config.providers.qwen.idleTimeoutMs, 75_000);
   assert.equal(config.providers.qwen.maxConcurrentRequests, 2);
-  assert.equal(config.providers.qwen.queueTimeoutMs, 120_000);
+  assert.equal(config.providers.qwen.queueTimeoutMs, 10_000);
   assert.equal(config.providers.qwen.rateLimitCooldownMs, 6 * 60 * 60_000);
   assert.deepEqual(config.providers.qwen.accounts.map((account) => account.id), ['main', 'qwen2', 'qwen3', 'qwen4', 'qwen5']);
   assert.equal(config.providers.kimi.requestTimeoutMs, 180_000);
@@ -51,7 +51,7 @@ test('legacy Qwen-only configuration receives multi-provider defaults', () => {
   assert.equal(config.defaultModel, 'qwen/legacy-model');
   assert.equal(config.providers.qwen.idleTimeoutMs, 91_000);
   assert.equal(config.providers.qwen.maxConcurrentRequests, 2);
-  assert.equal(config.providers.qwen.queueTimeoutMs, 120_000);
+  assert.equal(config.providers.qwen.queueTimeoutMs, 10_000);
   assert.equal(config.providers.qwen.rateLimitCooldownMs, 6 * 60 * 60_000);
   assert.deepEqual(config.providers.qwen.accounts.map((account) => account.id), ['main', 'qwen2', 'qwen3', 'qwen4', 'qwen5']);
   assert.equal(config.providers.kimi.enabled, false);
